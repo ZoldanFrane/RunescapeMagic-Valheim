@@ -1,6 +1,6 @@
 {
   "name": "RunescapeMagic",
-  "version_number": "1.0.0",
+  "version_number": "1.0.1",
   "website_url": "https://github.com/ZoldanFrane/RunescapeMagic-Valheim",
   "description": "Runescape-inspired utility magic for Valheim with an intuitive radial menu: Spectral Axe, Splinter, Ore Blast, Area Harvest, Instant Grow, Repairs and Overdrive.",
   "dependencies": [

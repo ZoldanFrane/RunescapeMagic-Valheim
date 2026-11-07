@@ -146,6 +146,10 @@ namespace RunescapeMagicValheim
                 highlightImg.sprite = highlightSprite;
                 highlightImg.color = Color.white;
             }
+            else
+            {
+                highlightImg.color = Color.clear;
+            }
             highlightImg.preserveAspect = true;
             highlightImg.raycastTarget = false;
 
@@ -917,27 +921,71 @@ namespace RunescapeMagicValheim
 
         private static bool LoadImageIntoTexture(Texture2D tex, byte[] data)
         {
+            if (tex == null || data == null || data.Length == 0) return false;
+
             if (!_loadImageInitialized)
             {
                 _loadImageInitialized = true;
                 try
                 {
+                    Type imgConvType = null;
                     foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
                     {
-                        var t = asm.GetType("UnityEngine.ImageConversion");
-                        if (t != null)
+                        try
                         {
-                            _loadImageMethod = t.GetMethod("LoadImage", new[] { typeof(Texture2D), typeof(byte[]) });
-                            if (_loadImageMethod != null) break;
+                            var t = asm.GetType("UnityEngine.ImageConversion");
+                            if (t != null)
+                            {
+                                imgConvType = t;
+                                break;
+                            }
                         }
+                        catch { }
                     }
 
-                    if (_loadImageMethod == null)
+                    if (imgConvType == null)
                     {
-                        // Fallback: попытаемся загрузить ImageConversionModule явно
-                        var asm = System.Reflection.Assembly.Load("UnityEngine.ImageConversionModule");
-                        var t = asm?.GetType("UnityEngine.ImageConversion");
-                        _loadImageMethod = t?.GetMethod("LoadImage", new[] { typeof(Texture2D), typeof(byte[]) });
+                        try
+                        {
+                            string managedPath = Path.Combine(Application.dataPath, "Managed", "UnityEngine.ImageConversionModule.dll");
+                            if (File.Exists(managedPath))
+                            {
+                                var asm = System.Reflection.Assembly.LoadFrom(managedPath);
+                                imgConvType = asm?.GetType("UnityEngine.ImageConversion");
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (imgConvType != null)
+                    {
+                        System.Reflection.MethodInfo[] methods = null;
+                        try
+                        {
+                            methods = imgConvType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                        }
+                        catch { }
+
+                        if (methods != null)
+                        {
+                            foreach (var m in methods)
+                            {
+                                if (m.Name != "LoadImage") continue;
+                                try
+                                {
+                                    var pars = m.GetParameters();
+                                    if (pars.Length >= 2 && pars[0].ParameterType == typeof(Texture2D) && pars[1].ParameterType == typeof(byte[]))
+                                    {
+                                        _loadImageMethod = m;
+                                        break;
+                                    }
+                                }
+                                catch
+                                {
+                                    // Безопасно пропускаем перегрузки с типами из netstandard 2.1 (ReadOnlySpan и т.д.)
+                                }
+                            }
+                        }
                     }
                 }
                 catch (Exception ex)
@@ -950,7 +998,11 @@ namespace RunescapeMagicValheim
             {
                 try
                 {
-                    return (bool)_loadImageMethod.Invoke(null, new object[] { tex, data });
+                    var pCount = _loadImageMethod.GetParameters().Length;
+                    if (pCount == 2)
+                        return (bool)_loadImageMethod.Invoke(null, new object[] { tex, data });
+                    else if (pCount == 3)
+                        return (bool)_loadImageMethod.Invoke(null, new object[] { tex, data, false });
                 }
                 catch (Exception ex)
                 {
@@ -980,14 +1032,31 @@ namespace RunescapeMagicValheim
         {
             try
             {
+                byte[] data = null;
+
+                // 1. Поиск на диске по всем возможным путям
                 string fullPath = FindUIFile(fileName);
-                if (string.IsNullOrEmpty(fullPath) || !File.Exists(fullPath))
+                if (!string.IsNullOrEmpty(fullPath) && File.Exists(fullPath))
                 {
-                    RunescapeMagicPlugin.Log.LogWarning($"[UI] Не найден файл иконки: {fileName}");
+                    try
+                    {
+                        data = File.ReadAllBytes(fullPath);
+                    }
+                    catch { }
+                }
+
+                // 2. Если файл не найден на диске, загружаем из встроенных ресурсов DLL (Embedded Resources)
+                if (data == null || data.Length == 0)
+                {
+                    data = LoadEmbeddedBytes(fileName);
+                }
+
+                if (data == null || data.Length == 0)
+                {
+                    RunescapeMagicPlugin.Log.LogWarning($"[UI] Не найден файл или ресурс иконки: {fileName}");
                     return null;
                 }
 
-                byte[] data = File.ReadAllBytes(fullPath);
                 Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
                 if (LoadImageIntoTexture(tex, data))
                 {
@@ -1000,31 +1069,83 @@ namespace RunescapeMagicValheim
             }
             catch (Exception ex)
             {
-                RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка загрузки текстуры {fileName}: {ex}");
+                RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка создания спрайта {fileName}: {ex}");
+            }
+            return null;
+        }
+
+        private static byte[] LoadEmbeddedBytes(string fileName)
+        {
+            try
+            {
+                var asm = typeof(SpellRadialMenu).Assembly;
+                string resourceName = null;
+                foreach (string name in asm.GetManifestResourceNames())
+                {
+                    if (name.EndsWith("." + fileName, StringComparison.OrdinalIgnoreCase) ||
+                        name.Equals(fileName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        resourceName = name;
+                        break;
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(resourceName))
+                {
+                    using (Stream stream = asm.GetManifestResourceStream(resourceName))
+                    {
+                        if (stream != null)
+                        {
+                            byte[] buffer = new byte[stream.Length];
+                            stream.Read(buffer, 0, buffer.Length);
+                            return buffer;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка чтения embedded resource {fileName}: {ex}");
             }
             return null;
         }
 
         private static string FindUIFile(string fileName)
         {
-            // 1. Папка UI рядом со сборкой DLL
+            // 1. Папка UI или корень рядом со сборкой DLL
             try
             {
                 string asmLoc = typeof(SpellRadialMenu).Assembly.Location;
                 if (!string.IsNullOrEmpty(asmLoc))
                 {
                     string dir = Path.GetDirectoryName(asmLoc);
-                    string candidate = Path.Combine(dir, "UI", fileName);
-                    if (File.Exists(candidate)) return candidate;
+                    string candidate1 = Path.Combine(dir, "UI", fileName);
+                    if (File.Exists(candidate1)) return candidate1;
+
+                    string candidate2 = Path.Combine(dir, fileName);
+                    if (File.Exists(candidate2)) return candidate2;
                 }
             }
             catch { }
 
-            // 2. В папке плагинов BepInEx
+            // 2. В папках плагинов BepInEx
             try
             {
-                string bepCandidate = Path.Combine(BepInEx.Paths.PluginPath, "RunescapeMagic", "UI", fileName);
-                if (File.Exists(bepCandidate)) return bepCandidate;
+                string pluginDir = BepInEx.Paths.PluginPath;
+                if (Directory.Exists(pluginDir))
+                {
+                    string c1 = Path.Combine(pluginDir, "ZoldanTeam-RunescapeMagic", "UI", fileName);
+                    if (File.Exists(c1)) return c1;
+
+                    string c2 = Path.Combine(pluginDir, "ZoldanTeam-RunescapeMagic", fileName);
+                    if (File.Exists(c2)) return c2;
+
+                    string c3 = Path.Combine(pluginDir, "RunescapeMagic", "UI", fileName);
+                    if (File.Exists(c3)) return c3;
+
+                    string c4 = Path.Combine(pluginDir, "RunescapeMagic", fileName);
+                    if (File.Exists(c4)) return c4;
+                }
             }
             catch { }
 

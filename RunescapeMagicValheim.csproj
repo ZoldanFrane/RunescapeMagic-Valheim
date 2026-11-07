@@ -4,7 +4,7 @@
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>RunescapeMagicValheim</AssemblyName>
     <Description>Магия Runescape в Valheim</Description>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
@@ -48,6 +48,11 @@
     </Reference>
   </ItemGroup>
 
+  <!-- Модули Unity -->
+  <ItemGroup>
+    <EmbeddedResource Include="UI\*.png" />
+  </ItemGroup>
+
   <!-- Подключение модулей Unity -->
   <ItemGroup>
     <Reference Include="UnityEngine">
@@ -82,11 +87,11 @@
       <TargetPluginFolder Condition="Exists('$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\')">$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\</TargetPluginFolder>
       <TargetPluginFolder Condition="'$(TargetPluginFolder)' == ''">$(BepInExProfileDir)\plugins\RunescapeMagic\</TargetPluginFolder>
     </PropertyGroup>
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TargetPluginFolder)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TargetPluginFolder)" ContinueOnError="true" />
     <ItemGroup>
       <UIFiles Include="$(ProjectDir)UI\*.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(UIFiles)" DestinationFolder="$(TargetPluginFolder)UI\" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(UIFiles)" DestinationFolder="$(TargetPluginFolder)UI\" SkipUnchangedFiles="true" ContinueOnError="true" />
   </Target>
 
 </Project>

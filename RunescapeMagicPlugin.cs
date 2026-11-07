@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.1.0";
+        public const string PluginVersion = "1.0.1";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -74,10 +74,9 @@ namespace RunescapeMagicValheim
         }
 
         /// <summary>
-        /// Проверяет и списывает выносливость и здоровье за каст способности.
-        /// Не позволяет игроку случайно убить себя кастом заклинания.
+        /// Проверяет, достаточно ли у игрока ресурсов (выносливости и здоровья) для каста заклинания.
         /// </summary>
-        public static bool TryConsumeResources(Player player, float staminaCost, float healthCost = 0f)
+        public static bool HasResources(Player player, float staminaCost, float healthCost = 0f)
         {
             if (player == null) return false;
 
@@ -89,13 +88,24 @@ namespace RunescapeMagicValheim
 
             if (healthCost > 0f)
             {
-                // Не даем убить себя кастом
                 if (player.GetHealth() <= healthCost)
                 {
                     player.Message(MessageHud.MessageType.Center, "Недостаточно здоровья для сотворения заклинания!");
                     return false;
                 }
             }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Проверяет и списывает выносливость и здоровье за каст способности.
+        /// Не позволяет игроку случайно убить себя кастом заклинания.
+        /// </summary>
+        public static bool TryConsumeResources(Player player, float staminaCost, float healthCost = 0f)
+        {
+            if (!HasResources(player, staminaCost, healthCost))
+                return false;
 
             if (staminaCost > 0f)
                 player.UseStamina(staminaCost);
@@ -473,13 +483,13 @@ namespace RunescapeMagicValheim
             float staminaCost = level >= 75f ? 5f : (level >= 35f ? 15f : 25f);
             float radius = level >= 55f ? 10f : 5f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
                 return;
 
-            RunescapeMagicPlugin.Instance.StartCoroutine(SpectralAxeProjectileRoutine(player, radius));
+            RunescapeMagicPlugin.Instance.StartCoroutine(SpectralAxeProjectileRoutine(player, radius, staminaCost));
         }
 
-        private static IEnumerator SpectralAxeProjectileRoutine(Player player, float radius)
+        private static IEnumerator SpectralAxeProjectileRoutine(Player player, float radius, float staminaCost)
         {
             Transform cam = GameCamera.instance != null ? GameCamera.instance.transform : player.transform;
             Vector3 currentPos = player.GetEyePoint() + cam.forward * 1.2f;
@@ -498,6 +508,7 @@ namespace RunescapeMagicValheim
             float maxDistance = 15f;
             float traveled = 0f;
             HashSet<TreeBase> hitTrees = new HashSet<TreeBase>();
+            bool resourcesConsumed = false;
 
             // Создаем горизонтальный призрачный топор с центром вращения строго на середине рукояти
             GameObject visualAxe = CreateSpectralAxeVisual(currentPos);
@@ -542,6 +553,12 @@ namespace RunescapeMagicValheim
                             continue;
                         }
 
+                        if (!resourcesConsumed)
+                        {
+                            resourcesConsumed = true;
+                            RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                        }
+
                         hitTrees.Add(tree);
 
                         HitData hit = new HitData();
@@ -560,6 +577,11 @@ namespace RunescapeMagicValheim
 
             if (visualAxe != null)
                 UnityEngine.Object.Destroy(visualAxe);
+
+            if (hitTrees.Count == 0 && player != null)
+            {
+                player.Message(MessageHud.MessageType.Center, "Призрачный топор не поразил ни одного дерева!");
+            }
         }
 
         private static GameObject CreateSpectralAxeVisual(Vector3 startPos)
@@ -801,23 +823,29 @@ namespace RunescapeMagicValheim
             float staminaCost = level >= 75f ? 15f : 25f;
             float healthCost = level >= 55f ? 0f : 10f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RunescapeMagicPlugin.Instance.StartCoroutine(SplinterRoutine(player, impactPoint, radius));
+                RunescapeMagicPlugin.Instance.StartCoroutine(SplinterRoutine(player, impactPoint, radius, staminaCost, healthCost));
             });
         }
 
-        private static IEnumerator SplinterRoutine(Player player, Vector3 center, float radius)
+        private static IEnumerator SplinterRoutine(Player player, Vector3 center, float radius, float staminaCost, float healthCost)
         {
-            DamageLogsInRadius(player, center, radius);
+            bool resourcesConsumed = false;
+            int logsHit = DamageLogsInRadius(player, center, radius, staminaCost, healthCost, ref resourcesConsumed);
             yield return new WaitForSeconds(1.0f);
-            DamageLogsInRadius(player, center, radius + 2f);
+            DamageLogsInRadius(player, center, radius + 2f, staminaCost, healthCost, ref resourcesConsumed);
+
+            if (logsHit == 0 && !resourcesConsumed && player != null)
+            {
+                player.Message(MessageHud.MessageType.Center, "В выбранной зоне нет упавших бревен!");
+            }
         }
 
-        private static void DamageLogsInRadius(Player player, Vector3 center, float radius)
+        private static int DamageLogsInRadius(Player player, Vector3 center, float radius, float staminaCost, float healthCost, ref bool resourcesConsumed)
         {
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<TreeLog> hitLogs = new HashSet<TreeLog>();
@@ -833,6 +861,12 @@ namespace RunescapeMagicValheim
                         continue;
                     }
 
+                    if (!resourcesConsumed)
+                    {
+                        resourcesConsumed = true;
+                        RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost);
+                    }
+
                     hitLogs.Add(log);
 
                     HitData hit = new HitData();
@@ -845,6 +879,8 @@ namespace RunescapeMagicValheim
                     player.RaiseSkill(Skills.SkillType.WoodCutting, 1.0f);
                 }
             }
+
+            return hitLogs.Count;
         }
 
         // ==========================================
@@ -914,12 +950,12 @@ namespace RunescapeMagicValheim
             float radius = level >= 75f ? 6f : (level >= 35f ? 4f : 2f);
             float staminaCost = level >= 55f ? 10f : 25f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RunescapeMagicPlugin.Instance.StartCoroutine(OreBlastWaveRoutine(player, impactPoint, radius, level, hitCol));
+                RunescapeMagicPlugin.Instance.StartCoroutine(OreBlastWaveRoutine(player, impactPoint, radius, level, hitCol, staminaCost));
             });
         }
 
@@ -940,11 +976,8 @@ namespace RunescapeMagicValheim
                 || prefabName.Contains("sapling") || prefabName.Contains("vines");
         }
 
-        private static IEnumerator OreBlastWaveRoutine(Player player, Vector3 center, float radius, float skillLevel, Collider directHitCol)
+        private static IEnumerator OreBlastWaveRoutine(Player player, Vector3 center, float radius, float skillLevel, Collider directHitCol, float staminaCost)
         {
-            // Воспроизводим громкий и видимый взрыв строго в точке прицела
-            SpawnExplosionEffect(center, radius);
-
             Collider[] sphereColliders = Physics.OverlapSphere(center, radius);
             List<Collider> colliders = new List<Collider>(sphereColliders);
             if (directHitCol != null && !colliders.Contains(directHitCol))
@@ -1205,6 +1238,23 @@ namespace RunescapeMagicValheim
                 }
             }
 
+            if (blastChunks.Count == 0)
+            {
+                if (player != null)
+                {
+                    player.Message(MessageHud.MessageType.Center, "В этой зоне нет доступной породы или руды!");
+                }
+                yield break;
+            }
+
+            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+            {
+                yield break;
+            }
+
+            // Воспроизводим громкий и видимый взрыв строго в точке прицела
+            SpawnExplosionEffect(center, radius);
+
             // Сортируем ВСЕ секции строго по расстоянию от точки прицела:
             // Ближайшие к точке прицеливания на поверхности разрушаются ПЕРВЫМИ,
             // а взрывная волна распространяется от центра наружу и вглубь!
@@ -1304,16 +1354,16 @@ namespace RunescapeMagicValheim
             float staminaCost = level >= 75f ? 5f : (level >= 35f ? 10f : 15f);
             bool autoPickup = level >= 50f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                AreaHarvestAtPoint(player, impactPoint, radius, autoPickup);
+                AreaHarvestAtPoint(player, impactPoint, radius, autoPickup, staminaCost);
             });
         }
 
-        private static void AreaHarvestAtPoint(Player player, Vector3 center, float radius, bool autoPickup)
+        private static void AreaHarvestAtPoint(Player player, Vector3 center, float radius, bool autoPickup, float staminaCost)
         {
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<Pickable> picked = new HashSet<Pickable>();
@@ -1345,6 +1395,7 @@ namespace RunescapeMagicValheim
 
             if (collectedCount > 0)
             {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
                 player.RaiseSkill(Skills.SkillType.Farming, collectedCount * 0.5f);
                 player.Message(MessageHud.MessageType.Center, $"Собрано растений/ресурсов: {collectedCount}");
 
@@ -1353,6 +1404,10 @@ namespace RunescapeMagicValheim
                 {
                     RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 2f));
                 }
+            }
+            else
+            {
+                player.Message(MessageHud.MessageType.Center, "В радиусе нет спелых растений для сбора!");
             }
         }
 
@@ -1402,6 +1457,9 @@ namespace RunescapeMagicValheim
             float radius = level >= 90f ? 15f : (level >= 50f ? 10f : 6f);
             float staminaCost = level >= 75f ? 15f : 30f;
             float healthCost = level >= 90f ? 0f : (level >= 75f ? 5f : 15f);
+
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
+                return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
@@ -1600,31 +1658,37 @@ namespace RunescapeMagicValheim
             else if (level >= 20f) repairRatio = 0.4f;
             else repairRatio = 0.2f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
-            int repairedCount = 0;
+            List<ItemDrop.ItemData> damagedItems = new List<ItemDrop.ItemData>();
             foreach (ItemDrop.ItemData item in player.GetInventory().GetAllItems())
             {
                 if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
                 {
-                    // Ремонтируем любые предметы (включая модовые), без привязки к конкретным верстакам/кузницам
-                    float addDurability = item.GetMaxDurability() * repairRatio;
-                    item.m_durability = Mathf.Min(item.GetMaxDurability(), item.m_durability + addDurability);
-                    repairedCount++;
+                    damagedItems.Add(item);
                 }
             }
 
-            if (repairedCount > 0)
-            {
-                PlayRepairSound(player.transform.position);
-                player.RaiseSkill(Skills.SkillType.Crafting, repairedCount * 0.75f);
-                player.Message(MessageHud.MessageType.Center, $"Починено предметов: {repairedCount} (+{(int)(repairRatio * 100)}% прочности)");
-            }
-            else
+            if (damagedItems.Count == 0)
             {
                 player.Message(MessageHud.MessageType.Center, "Все предметы в инвентаре целы!");
+                return;
             }
+
+            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+                return;
+
+            foreach (var item in damagedItems)
+            {
+                // Ремонтируем любые предметы (включая модовые), без привязки к конкретным верстакам/кузницам
+                float addDurability = item.GetMaxDurability() * repairRatio;
+                item.m_durability = Mathf.Min(item.GetMaxDurability(), item.m_durability + addDurability);
+            }
+
+            PlayRepairSound(player.transform.position);
+            player.RaiseSkill(Skills.SkillType.Crafting, damagedItems.Count * 0.75f);
+            player.Message(MessageHud.MessageType.Center, $"Починено предметов: {damagedItems.Count} (+{(int)(repairRatio * 100)}% прочности)");
         }
 
         private static bool CanRepairItem(ItemDrop.ItemData item, float level)
@@ -1643,16 +1707,16 @@ namespace RunescapeMagicValheim
             float staminaCost = level >= 60f ? 10f : 25f;
             bool ignoreStation = level >= 40f;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RepairPiecesAtPoint(player, impactPoint, radius, ignoreStation);
+                RepairPiecesAtPoint(player, impactPoint, radius, ignoreStation, staminaCost);
             });
         }
 
-        private static void RepairPiecesAtPoint(Player player, Vector3 center, float radius, bool ignoreStation)
+        private static void RepairPiecesAtPoint(Player player, Vector3 center, float radius, bool ignoreStation, float staminaCost)
         {
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<WearNTear> visited = new HashSet<WearNTear>();
@@ -1679,6 +1743,9 @@ namespace RunescapeMagicValheim
 
             if (toRepair.Count > 0)
             {
+                if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f))
+                    return;
+
                 PlayRepairSound(center);
                 RunescapeMagicPlugin.Instance.StartCoroutine(BatchedPieceRepairRoutine(player, toRepair));
             }
@@ -1738,16 +1805,16 @@ namespace RunescapeMagicValheim
             else if (level >= 60f) maxItemsPerStation = 10;
             else if (level >= 45f) maxItemsPerStation = 5;
 
-            if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                OverdriveAtPoint(player, impactPoint, radius, maxItemsPerStation);
+                OverdriveAtPoint(player, impactPoint, radius, maxItemsPerStation, staminaCost, healthCost);
             });
         }
 
-        private static void OverdriveAtPoint(Player player, Vector3 center, float radius, int maxItemsPerStation)
+        private static void OverdriveAtPoint(Player player, Vector3 center, float radius, int maxItemsPerStation, float staminaCost, float healthCost)
         {
             Collider[] colliders = Physics.OverlapSphere(center, radius);
 
@@ -1803,6 +1870,7 @@ namespace RunescapeMagicValheim
 
             if (processedTotal > 0)
             {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost);
                 player.RaiseSkill(Skills.SkillType.Crafting, processedTotal * 0.5f);
                 player.Message(MessageHud.MessageType.Center, $"Овердрайв обработал механизмов/ресурсов: {processedTotal}");
             }
