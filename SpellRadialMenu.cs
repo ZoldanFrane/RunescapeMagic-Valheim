@@ -610,7 +610,7 @@ namespace RunescapeMagicValheim
                     info.ReqLevel = 10f;
                     info.StaminaCost = info.EffectiveLevel >= 65f ? 15f : 30f;
                     info.HealthCost = info.EffectiveLevel >= 85f ? 0f : (info.EffectiveLevel >= 65f ? 10f : 20f);
-                    int repPct = info.EffectiveLevel >= 30f ? 100 : 50;
+                    int repPct = info.EffectiveLevel >= 50f ? 100 : (info.EffectiveLevel >= 40f ? 80 : (info.EffectiveLevel >= 30f ? 60 : (info.EffectiveLevel >= 20f ? 40 : 20)));
                     info.ExtraStats = $"Восстанавливает {repPct}% прочности";
                     break;
 
@@ -880,9 +880,11 @@ namespace RunescapeMagicValheim
                     break;
 
                 case SpellType.InventoryRepair:
-                    list.Add(new SpellMilestone(10f, "Починка предметов верстака/кузницы на 50% (30 вын., 20 ОЗ)"));
-                    list.Add(new SpellMilestone(30f, "Полная починка предметов на 100% прочности"));
-                    list.Add(new SpellMilestone(50f, "Починка снаряжения черной кузницы и стола гальдров"));
+                    list.Add(new SpellMilestone(10f, "Починка любого снаряжения на 20% (30 вын., 20 ОЗ)"));
+                    list.Add(new SpellMilestone(20f, "Починка любого снаряжения на 40% прочности"));
+                    list.Add(new SpellMilestone(30f, "Починка любого снаряжения на 60% прочности"));
+                    list.Add(new SpellMilestone(40f, "Починка любого снаряжения на 80% прочности"));
+                    list.Add(new SpellMilestone(50f, "Полная починка любого снаряжения на 100% за применение"));
                     list.Add(new SpellMilestone(65f, "Затраты снижены до 15 выносливости и 10 ОЗ"));
                     list.Add(new SpellMilestone(85f, "Затраты здоровья убраны (0 ОЗ)"));
                     break;

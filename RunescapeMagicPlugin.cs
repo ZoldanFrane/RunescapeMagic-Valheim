@@ -1586,7 +1586,19 @@ namespace RunescapeMagicValheim
 
             float staminaCost = level >= 65f ? 15f : 30f;
             float healthCost = level >= 85f ? 0f : (level >= 65f ? 10f : 20f);
-            float repairRatio = level >= 30f ? 1.0f : 0.5f;
+
+            // Процент починки от уровня Ремесла:
+            // 10 ур. -> 20%
+            // 20 ур. -> 40%
+            // 30 ур. -> 60%
+            // 40 ур. -> 80%
+            // 50+ ур. -> 100%
+            float repairRatio;
+            if (level >= 50f) repairRatio = 1.0f;
+            else if (level >= 40f) repairRatio = 0.8f;
+            else if (level >= 30f) repairRatio = 0.6f;
+            else if (level >= 20f) repairRatio = 0.4f;
+            else repairRatio = 0.2f;
 
             if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
                 return;
@@ -1596,12 +1608,10 @@ namespace RunescapeMagicValheim
             {
                 if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
                 {
-                    if (CanRepairItem(item, level))
-                    {
-                        float missing = item.GetMaxDurability() - item.m_durability;
-                        item.m_durability = Mathf.Min(item.GetMaxDurability(), item.m_durability + missing * repairRatio);
-                        repairedCount++;
-                    }
+                    // Ремонтируем любые предметы (включая модовые), без привязки к конкретным верстакам/кузницам
+                    float addDurability = item.GetMaxDurability() * repairRatio;
+                    item.m_durability = Mathf.Min(item.GetMaxDurability(), item.m_durability + addDurability);
+                    repairedCount++;
                 }
             }
 
@@ -1609,34 +1619,18 @@ namespace RunescapeMagicValheim
             {
                 PlayRepairSound(player.transform.position);
                 player.RaiseSkill(Skills.SkillType.Crafting, repairedCount * 0.75f);
-                player.Message(MessageHud.MessageType.Center, $"Починено предметов: {repairedCount} ({(int)(repairRatio * 100)}% прочности)");
+                player.Message(MessageHud.MessageType.Center, $"Починено предметов: {repairedCount} (+{(int)(repairRatio * 100)}% прочности)");
             }
             else
             {
-                player.Message(MessageHud.MessageType.Center, "Нет доступных предметов для починки на текущем уровне!");
+                player.Message(MessageHud.MessageType.Center, "Все предметы в инвентаре целы!");
             }
         }
 
         private static bool CanRepairItem(ItemDrop.ItemData item, float level)
         {
-            Recipe recipe = ObjectDB.instance.GetRecipe(item);
-            string stationName = "";
-
-            if (recipe != null)
-            {
-                CraftingStation station = recipe.m_repairStation != null ? recipe.m_repairStation : recipe.m_craftingStation;
-                if (station != null) stationName = station.name.ToLowerInvariant();
-            }
-
-            // Предметы без станка или верстак / кузница доступны с ур. 10
-            if (string.IsNullOrEmpty(stationName) || stationName.Contains("workbench") || stationName.Contains("forge"))
-                return level >= 10f;
-
-            // Черная кузница и стол гальдров: ур. 50
-            if (stationName.Contains("blackforge") || stationName.Contains("galdr"))
-                return level >= 50f;
-
-            return level >= 50f;
+            if (item?.m_shared == null) return false;
+            return item.m_shared.m_useDurability;
         }
 
         // ==========================================
