@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.0.2";
+        public const string PluginVersion = "1.0.3";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
