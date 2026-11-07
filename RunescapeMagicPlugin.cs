@@ -1821,6 +1821,7 @@ namespace RunescapeMagicValheim
             HashSet<Smelter> smelters = new HashSet<Smelter>();
             HashSet<Fermenter> fermenters = new HashSet<Fermenter>();
             int processedTotal = 0;
+            bool lackedFuel = false;
 
             foreach (Collider col in colliders)
             {
@@ -1834,7 +1835,21 @@ namespace RunescapeMagicValheim
                     smelter.m_nview.ClaimOwnership();
 
                     int queueSize = smelter.GetQueueSize();
-                    int toProcess = Mathf.Min(queueSize, maxItemsPerStation);
+                    if (queueSize <= 0) continue;
+
+                    bool requiresFuel = smelter.m_maxFuel > 0;
+                    int fuelPerProduct = smelter.m_fuelPerProduct > 0 ? smelter.m_fuelPerProduct : 1;
+                    float currentFuel = smelter.GetFuel();
+
+                    int maxAffordable = requiresFuel ? (int)(currentFuel / fuelPerProduct) : int.MaxValue;
+                    if (requiresFuel && maxAffordable <= 0)
+                    {
+                        lackedFuel = true;
+                        continue;
+                    }
+
+                    int toProcess = Mathf.Min(queueSize, Mathf.Min(maxItemsPerStation, maxAffordable));
+                    int actuallyProcessed = 0;
 
                     for (int i = 0; i < toProcess; i++)
                     {
@@ -1843,11 +1858,21 @@ namespace RunescapeMagicValheim
                         {
                             smelter.RemoveOneOre();
                             smelter.QueueProcessed(ore);
+                            if (requiresFuel)
+                            {
+                                currentFuel -= fuelPerProduct;
+                            }
+                            actuallyProcessed++;
                             processedTotal++;
                         }
                     }
 
-                    if (toProcess > 0)
+                    if (requiresFuel)
+                    {
+                        smelter.SetFuel(Mathf.Max(0f, currentFuel));
+                    }
+
+                    if (actuallyProcessed > 0)
                     {
                         smelter.SpawnProcessed();
                     }
@@ -1876,7 +1901,14 @@ namespace RunescapeMagicValheim
             }
             else
             {
-                player.Message(MessageHud.MessageType.Center, "В радиусе действия нет загруженных механизмов или бочек!");
+                if (lackedFuel)
+                {
+                    player.Message(MessageHud.MessageType.Center, "В печах нет угля/топлива для переплавки!");
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, "В радиусе действия нет загруженных механизмов или бочек!");
+                }
             }
         }
 
