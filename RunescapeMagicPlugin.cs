@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.0.4";
+        public const string PluginVersion = "1.0.5";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -44,11 +44,45 @@ namespace RunescapeMagicValheim
             try
             {
                 _harmony.PatchAll(Assembly.GetExecutingAssembly());
+                TryPatchSeedBedMod(_harmony);
                 Log.LogInfo($"{PluginName} v{PluginVersion} успешно загружен!");
             }
             catch (Exception ex)
             {
                 Log.LogError($"[RunescapeMagic] Ошибка при инициализации Harmony: {ex}");
+            }
+        }
+
+        private static void TryPatchSeedBedMod(Harmony harmony)
+        {
+            try
+            {
+                Type gType = AccessTools.TypeByName("SeedBed.Functions.Germination");
+                if (gType == null) return;
+
+                MethodInfo getGermTime = AccessTools.Method(gType, "GetGerminationTime");
+                if (getGermTime != null)
+                {
+                    harmony.Patch(getGermTime, prefix: new HarmonyMethod(AccessTools.Method(typeof(SeedBedDynamicPatches), nameof(SeedBedDynamicPatches.GetGerminationTimePrefix))));
+                }
+
+                MethodInfo rpcTap = AccessTools.Method(gType, "RPC_Tap");
+                if (rpcTap != null)
+                {
+                    harmony.Patch(rpcTap, prefix: new HarmonyMethod(AccessTools.Method(typeof(SeedBedDynamicPatches), nameof(SeedBedDynamicPatches.RpcTapPrefix))));
+                }
+
+                MethodInfo rpcAddItem = AccessTools.Method(gType, "RPC_AddItem");
+                if (rpcAddItem != null)
+                {
+                    harmony.Patch(rpcAddItem, prefix: new HarmonyMethod(AccessTools.Method(typeof(SeedBedDynamicPatches), nameof(SeedBedDynamicPatches.RpcAddItemPrefix))));
+                }
+
+                Log.LogInfo("[RunescapeMagic] Интеграция с модом SeedBed успешно подключена.");
+            }
+            catch (Exception ex)
+            {
+                Log.LogWarning($"[RunescapeMagic] Не удалось подключить патч к SeedBed: {ex.Message}");
             }
         }
 
@@ -462,6 +496,30 @@ namespace RunescapeMagicValheim
             return true;
         }
 
+        public static float GetMinAxeChopDamage(int toolTier)
+        {
+            switch (toolTier)
+            {
+                case 0: return 20f;  // Каменный топор (Stone Axe)
+                case 1: return 40f;  // Бронзовый топор (Bronze Axe)
+                case 2: return 50f;  // Железный топор (Iron Axe)
+                case 3: return 60f;  // Чернометаллический топор (Black Metal Axe)
+                default: return 70f; // Топоры поздней игры (Mistlands/Ashlands)
+            }
+        }
+
+        public static float GetMinPickaxeDamage(int toolTier)
+        {
+            switch (toolTier)
+            {
+                case 0: return 18f;  // Роговая кирка (Antler Pickaxe)
+                case 1: return 25f;  // Бронзовая кирка (Bronze Pickaxe)
+                case 2: return 33f;  // Железная кирка (Iron Pickaxe)
+                case 3: return 42f;  // Чернометаллическая кирка (Black Metal Pickaxe)
+                default: return 55f; // Кирки поздней игры (Ashlands)
+            }
+        }
+
         // ==========================================
         // 1. ДЕРЕВО: ПРИЗРАЧНЫЙ ТОПОР
         // ==========================================
@@ -567,8 +625,9 @@ namespace RunescapeMagicValheim
                         hit.m_toolTier = 10;
                         hit.SetAttacker(player);
 
+                        float hits = Mathf.Max(1f, tree.m_health / GetMinAxeChopDamage(tree.m_minToolTier));
                         tree.Damage(hit);
-                        player.RaiseSkill(Skills.SkillType.WoodCutting, 1.2f);
+                        player.RaiseSkill(Skills.SkillType.WoodCutting, hits);
                     }
                 }
 
@@ -875,8 +934,9 @@ namespace RunescapeMagicValheim
                     hit.m_toolTier = 10;
                     hit.SetAttacker(player);
 
+                    float hits = Mathf.Max(1f, log.m_health / GetMinAxeChopDamage(log.m_minToolTier));
                     log.Damage(hit);
-                    player.RaiseSkill(Skills.SkillType.WoodCutting, 1.0f);
+                    player.RaiseSkill(Skills.SkillType.WoodCutting, hits);
                 }
             }
 
@@ -889,6 +949,7 @@ namespace RunescapeMagicValheim
         private class BlastChunk
         {
             public float Distance;
+            public float XpGain;
             public Action DestroyAction;
         }
 
@@ -1054,10 +1115,13 @@ namespace RunescapeMagicValheim
                             {
                                 int chunkIndex = i;
                                 Vector3 hitPos = chunkPos;
+                                float chunkHealth = mineRock5.m_health > 0f ? mineRock5.m_health : 50f;
+                                float chunkXp = Mathf.Max(1f, chunkHealth / GetMinPickaxeDamage(mineRock5.m_minToolTier));
 
                                 blastChunks.Add(new BlastChunk
                                 {
                                     Distance = dist,
+                                    XpGain = chunkXp,
                                     DestroyAction = () =>
                                     {
                                         if (mineRock5 == null || mineRock5.m_allDestroyed) return;
@@ -1144,9 +1208,12 @@ namespace RunescapeMagicValheim
                             {
                                 int chunkIdx = i;
                                 Vector3 hitPos = chunkPos;
+                                float chunkHealth = mineRock.m_health > 0f ? mineRock.m_health : 50f;
+                                float chunkXp = Mathf.Max(1f, chunkHealth / GetMinPickaxeDamage(mineRock.m_minToolTier));
                                 blastChunks.Add(new BlastChunk
                                 {
                                     Distance = dist,
+                                    XpGain = chunkXp,
                                     DestroyAction = () =>
                                     {
                                         if (mineRock == null) return;
@@ -1216,9 +1283,12 @@ namespace RunescapeMagicValheim
                     rocksCount++;
 
                     float dist = Vector3.Distance(center, col.bounds.center);
+                    float chunkHealth = dest.m_health > 0f ? dest.m_health : 40f;
+                    float chunkXp = Mathf.Max(1f, chunkHealth / GetMinPickaxeDamage(dest.m_minToolTier));
                     blastChunks.Add(new BlastChunk
                     {
                         Distance = dist,
+                        XpGain = chunkXp,
                         DestroyAction = () =>
                         {
                             if (dest == null) return;
@@ -1260,10 +1330,12 @@ namespace RunescapeMagicValheim
             // а взрывная волна распространяется от центра наружу и вглубь!
             blastChunks.Sort((a, b) => a.Distance.CompareTo(b.Distance));
 
+            float totalMiningXp = 0f;
             int countInBatch = 0;
             foreach (var chunk in blastChunks)
             {
                 chunk.DestroyAction?.Invoke();
+                totalMiningXp += chunk.XpGain;
                 countInBatch++;
                 if (countInBatch >= 4)
                 {
@@ -1285,11 +1357,10 @@ namespace RunescapeMagicValheim
                 }
             }
 
-            // Начисляем опыт кирки ОДИН раз за каст, пропорционально количеству разрушенных объектов (не более 1.5-2.0 за раз)
-            if (rocksCount > 0)
+            // Начисляем опыт кирки, равный сумме ударов минимальной кирки по каждой разрушенной секции
+            if (rocksCount > 0 && totalMiningXp > 0f)
             {
-                float xpGain = Mathf.Clamp(rocksCount * 0.5f, 0.5f, 2.0f);
-                player.RaiseSkill(Skills.SkillType.Pickaxes, xpGain);
+                player.RaiseSkill(Skills.SkillType.Pickaxes, totalMiningXp);
                 player.Message(MessageHud.MessageType.Center, $"Разрушено залежей/камней: {rocksCount}");
             }
         }
@@ -1368,6 +1439,7 @@ namespace RunescapeMagicValheim
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<Pickable> picked = new HashSet<Pickable>();
             HashSet<PickableItem> pickedItems = new HashSet<PickableItem>();
+            HashSet<GameObject> processedBeds = new HashSet<GameObject>();
             int collectedCount = 0;
 
             foreach (Collider col in colliders)
@@ -1391,6 +1463,32 @@ namespace RunescapeMagicValheim
                     pickableItem.Interact(player, false, false);
                     collectedCount++;
                 }
+
+                // 3. Модовые рассадницы (blacks7ar-SeedBed: Germination)
+                GameObject root = col.transform.root.gameObject;
+                if (!processedBeds.Contains(root))
+                {
+                    MonoBehaviour[] scripts = root.GetComponentsInChildren<MonoBehaviour>();
+                    foreach (MonoBehaviour mb in scripts)
+                    {
+                        if (mb != null && mb.GetType().Name == "Germination")
+                        {
+                            processedBeds.Add(root);
+                            MethodInfo getStatus = mb.GetType().GetMethod("GetStatus", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (getStatus != null)
+                            {
+                                object statusObj = getStatus.Invoke(mb, null);
+                                if (statusObj != null && statusObj.ToString() == "Ready")
+                                {
+                                    MethodInfo interact = mb.GetType().GetMethod("Interact", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                                    interact?.Invoke(mb, new object[] { player, false, false });
+                                    collectedCount++;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             if (collectedCount > 0)
@@ -1402,7 +1500,7 @@ namespace RunescapeMagicValheim
                 // На 50+ уровне переносим выпавший лут прямо в инвентарь игрока
                 if (autoPickup)
                 {
-                    RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 2f));
+                    RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 3f));
                 }
             }
             else
@@ -1413,29 +1511,66 @@ namespace RunescapeMagicValheim
 
         private static IEnumerator AutoPickupRoutine(Player player, Vector3 center, float radius)
         {
-            yield return new WaitForSeconds(0.2f);
-            if (player == null || player.GetInventory() == null) yield break;
+            HashSet<ItemDrop> collectedDrops = new HashSet<ItemDrop>();
 
-            Collider[] drops = Physics.OverlapSphere(center, radius);
-            foreach (Collider c in drops)
+            // Проводим несколько последовательных итераций в течение 2.8 сек,
+            // чтобы надежно захватить лут как с обычной задержкой спавна, так и модовый с задержкой (например SeedBed m_harvestDelay = 1.5s)
+            for (int pass = 0; pass < 8; pass++)
             {
-                if (c == null) continue;
-                ItemDrop itemDrop = c.GetComponentInParent<ItemDrop>();
-                if (itemDrop != null && itemDrop.CanPickup() && itemDrop.m_itemData != null)
+                yield return new WaitForSeconds(0.35f);
+                if (player == null || player.GetInventory() == null) yield break;
+
+                // 1. Поиск через активные экземпляры ItemDrop (наиболее надежный способ в Valheim)
+                if (ItemDrop.s_instances != null)
                 {
-                    if (player.GetInventory().CanAddItem(itemDrop.m_itemData, -1))
+                    for (int i = ItemDrop.s_instances.Count - 1; i >= 0; i--)
                     {
-                        if (player.GetInventory().AddItem(itemDrop.m_itemData))
+                        if (i >= ItemDrop.s_instances.Count) continue;
+                        ItemDrop itemDrop = ItemDrop.s_instances[i];
+                        if (itemDrop == null || collectedDrops.Contains(itemDrop)) continue;
+                        if (Vector3.Distance(center, itemDrop.transform.position) > radius) continue;
+
+                        if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
+                            continue;
+
+                        ItemDrop.ItemData data = itemDrop.m_itemData;
+                        if (player.GetInventory().CanAddItem(data, -1))
                         {
-                            if (itemDrop.m_nview != null && itemDrop.m_nview.IsValid())
+                            collectedDrops.Add(itemDrop);
+                            int stack = data.m_stack;
+
+                            if (player.GetInventory().AddItem(data))
                             {
                                 itemDrop.m_nview.ClaimOwnership();
-                                itemDrop.m_nview.Destroy();
+                                ZNetScene.instance.Destroy(itemDrop.gameObject);
+                                player.ShowPickupMessage(data, stack);
                             }
-                            else
-                            {
-                                UnityEngine.Object.Destroy(itemDrop.gameObject);
-                            }
+                        }
+                    }
+                }
+
+                // 2. Дополнительный физический поиск по коллайдерам
+                Collider[] drops = Physics.OverlapSphere(center, radius);
+                foreach (Collider c in drops)
+                {
+                    if (c == null) continue;
+                    ItemDrop itemDrop = c.GetComponentInParent<ItemDrop>();
+                    if (itemDrop == null || collectedDrops.Contains(itemDrop)) continue;
+
+                    if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
+                        continue;
+
+                    ItemDrop.ItemData data = itemDrop.m_itemData;
+                    if (player.GetInventory().CanAddItem(data, -1))
+                    {
+                        collectedDrops.Add(itemDrop);
+                        int stack = data.m_stack;
+
+                        if (player.GetInventory().AddItem(data))
+                        {
+                            itemDrop.m_nview.ClaimOwnership();
+                            ZNetScene.instance.Destroy(itemDrop.gameObject);
+                            player.ShowPickupMessage(data, stack);
                         }
                     }
                 }
@@ -1489,9 +1624,9 @@ namespace RunescapeMagicValheim
                     {
                         processedRoots.Add(root);
                         plant.m_nview.ClaimOwnership();
-                        // Принудительно задаем статус Healthy и перематываем время посадки в прошлое
+                        // Принудительно задаем статус Healthy и сбрасываем время посадки (0L безопасно для любого возраста мира)
                         plant.m_status = Plant.Status.Healthy;
-                        plant.m_nview.GetZDO().Set(ZDOVars.s_plantTime, (ZNet.instance.GetTime() - TimeSpan.FromDays(5)).Ticks);
+                        plant.m_nview.GetZDO().Set(ZDOVars.s_plantTime, 0L);
                         GameObject grownObj = plant.Grow();
                         if (grownObj != null || plant.m_status == Plant.Status.Healthy)
                         {
@@ -1566,7 +1701,7 @@ namespace RunescapeMagicValheim
                 }
 
                 // 4. Модовые рассадницы "Бэды" (blacks7ar-SeedBed: Germination) и другие компоненты
-                MonoBehaviour[] scripts = col.GetComponentsInParent<MonoBehaviour>();
+                MonoBehaviour[] scripts = root.GetComponentsInChildren<MonoBehaviour>();
                 bool handledMod = false;
                 foreach (MonoBehaviour mb in scripts)
                 {
@@ -1576,18 +1711,40 @@ namespace RunescapeMagicValheim
                     if (tName == "Germination")
                     {
                         processedRoots.Add(root);
-                        ZNetView nv = mb.GetComponent<ZNetView>();
-                        if (nv != null && nv.IsValid())
-                        {
-                            nv.ClaimOwnership();
-                            nv.GetZDO().Set(ZDOVars.s_startTime, (ZNet.instance.GetTime() - TimeSpan.FromHours(24)).Ticks);
-                        }
 
-                        MethodInfo slowUpdate = mb.GetType().GetMethod("SlowUpdate", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                        slowUpdate?.Invoke(mb, null);
-                        grownCount++;
-                        handledMod = true;
-                        break;
+                        MethodInfo getStatus = mb.GetType().GetMethod("GetStatus", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        object statusObj = getStatus?.Invoke(mb, null);
+                        int statusInt = statusObj != null ? Convert.ToInt32(statusObj) : -1;
+
+                        // Если в рассаднице посажены культуры и они еще растут (Germinating = 1)
+                        if (statusInt == 1 || (statusObj != null && statusObj.ToString() == "Germinating"))
+                        {
+                            ZNetView nv = mb.GetComponent<ZNetView>() ?? root.GetComponent<ZNetView>();
+                            if (nv != null && nv.IsValid())
+                            {
+                                nv.ClaimOwnership();
+                                nv.GetZDO().Set("RSM_InstantGrown", true);
+
+                                long netTicks = ZNet.instance.GetTime().Ticks;
+                                long safeTicks = Math.Max(1L, netTicks - 36000000000L);
+                                nv.GetZDO().Set(ZDOVars.s_startTime, safeTicks);
+                            }
+
+                            // Сбрасываем m_germinationDuration для мгновенного завершения
+                            FieldInfo durField = mb.GetType().GetField("m_germinationDuration", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            durField?.SetValue(mb, 0f);
+
+                            // Принудительно вызываем обновление состояния грядки
+                            MethodInfo slowUpdate = mb.GetType().GetMethod("SlowUpdate", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            slowUpdate?.Invoke(mb, null);
+
+                            MethodInfo reapply = mb.GetType().GetMethod("ReapplyVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            reapply?.Invoke(mb, null);
+
+                            grownCount++;
+                            handledMod = true;
+                            break;
+                        }
                     }
                     else if (tName == "StumpGrower")
                     {
@@ -1886,8 +2043,15 @@ namespace RunescapeMagicValheim
                     if (fermenter.GetStatus() == Fermenter.Status.Fermenting)
                     {
                         fermenter.m_nview.ClaimOwnership();
-                        // Устанавливаем время начала брожения в глубокое прошлое, переводя бочку в статус Ready
-                        fermenter.m_nview.GetZDO().Set(ZDOVars.s_startTime, (ZNet.instance.GetTime() - TimeSpan.FromSeconds(fermenter.m_fermentationDuration + 10f)).Ticks);
+                        // Устанавливаем время начала брожения в глубокое прошлое, переводя бочку в статус Ready (с защитой от сбоя в новых мирах)
+                        long netTicks = ZNet.instance.GetTime().Ticks;
+                        long reqTicks = (long)((fermenter.m_fermentationDuration + 10f) * 10000000.0);
+                        long safeStartTime = netTicks > reqTicks ? (netTicks - reqTicks) : 1L;
+                        fermenter.m_nview.GetZDO().Set(ZDOVars.s_startTime, safeStartTime);
+                        if (netTicks <= reqTicks)
+                        {
+                            fermenter.m_fermentationDuration = 0f;
+                        }
                         processedTotal++;
                     }
                 }
@@ -2071,6 +2235,68 @@ namespace RunescapeMagicValheim
             {
                 // Fallback без звука в случае отсутствия префаба
             }
+        }
+    }
+
+    public static class SeedBedDynamicPatches
+    {
+        private static float GetOriginalDuration()
+        {
+            try
+            {
+                Type pluginType = AccessTools.TypeByName("SeedBed.Plugin");
+                FieldInfo cfgField = pluginType?.GetField("_germinationDuration", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                object cfgEntry = cfgField?.GetValue(null);
+                if (cfgEntry != null)
+                {
+                    PropertyInfo valProp = cfgEntry.GetType().GetProperty("Value");
+                    if (valProp != null)
+                    {
+                        return (float)valProp.GetValue(cfgEntry);
+                    }
+                }
+            }
+            catch { }
+            return 4000f;
+        }
+
+        public static bool GetGerminationTimePrefix(MonoBehaviour __instance, ref double __result)
+        {
+            if (__instance == null) return true;
+            ZNetView nv = __instance.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid())
+            {
+                if (nv.GetZDO().GetBool("RSM_InstantGrown", false))
+                {
+                    __result = 99999999.0;
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public static void RpcTapPrefix(MonoBehaviour __instance)
+        {
+            if (__instance == null) return;
+            ZNetView nv = __instance.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid())
+            {
+                nv.GetZDO().Set("RSM_InstantGrown", false);
+            }
+            FieldInfo durField = __instance.GetType().GetField("m_germinationDuration", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            durField?.SetValue(__instance, GetOriginalDuration());
+        }
+
+        public static void RpcAddItemPrefix(MonoBehaviour __instance)
+        {
+            if (__instance == null) return;
+            ZNetView nv = __instance.GetComponent<ZNetView>();
+            if (nv != null && nv.IsValid())
+            {
+                nv.GetZDO().Set("RSM_InstantGrown", false);
+            }
+            FieldInfo durField = __instance.GetType().GetField("m_germinationDuration", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            durField?.SetValue(__instance, GetOriginalDuration());
         }
     }
 }
