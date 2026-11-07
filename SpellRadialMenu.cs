@@ -871,7 +871,7 @@ namespace RunescapeMagicValheim
                     break;
 
                 case SpellType.InstantGrow:
-                    list.Add(new SpellMilestone(25f, "Рост овощей, саженцев и пней (Радиус: 6м, 30 вын., 15 ОЗ)"));
+                    list.Add(new SpellMilestone(25f, "Рост овощей и саженцев (Радиус: 6м, 30 вын., 15 ОЗ)"));
                     list.Add(new SpellMilestone(40f, "Выращивание ячменя, льна, берез и дубов"));
                     list.Add(new SpellMilestone(50f, "Радиус мгновенного роста увеличен до 10 метров"));
                     list.Add(new SpellMilestone(60f, "Выращивание маг-грибов, паффов и пеплоносца"));
