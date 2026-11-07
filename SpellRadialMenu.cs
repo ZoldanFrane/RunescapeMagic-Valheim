@@ -916,98 +916,27 @@ namespace RunescapeMagicValheim
         #region Custom UI Sprites Loader
 
         private static readonly Dictionary<string, Sprite> _customSpriteCache = new Dictionary<string, Sprite>(StringComparer.OrdinalIgnoreCase);
-        private static System.Reflection.MethodInfo _loadImageMethod;
-        private static bool _loadImageInitialized = false;
+
+        // Чистая рефлексия загрузки текстур согласно требованиям модерации Thunderstore через AccessTools
+        private static System.Reflection.MethodInfo LoadImageMethod { get; } = AccessTools.Method(
+            "UnityEngine.ImageConversion:LoadImage",
+            new Type[] { typeof(Texture2D), typeof(byte[]) }
+        );
 
         private static bool LoadImageIntoTexture(Texture2D tex, byte[] data)
         {
             if (tex == null || data == null || data.Length == 0) return false;
 
-            if (!_loadImageInitialized)
+            try
             {
-                _loadImageInitialized = true;
-                try
+                if (LoadImageMethod != null)
                 {
-                    Type imgConvType = null;
-                    foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-                    {
-                        try
-                        {
-                            var t = asm.GetType("UnityEngine.ImageConversion");
-                            if (t != null)
-                            {
-                                imgConvType = t;
-                                break;
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (imgConvType == null)
-                    {
-                        try
-                        {
-                            string managedPath = Path.Combine(Application.dataPath, "Managed", "UnityEngine.ImageConversionModule.dll");
-                            if (File.Exists(managedPath))
-                            {
-                                var asm = System.Reflection.Assembly.LoadFrom(managedPath);
-                                imgConvType = asm?.GetType("UnityEngine.ImageConversion");
-                            }
-                        }
-                        catch { }
-                    }
-
-                    if (imgConvType != null)
-                    {
-                        System.Reflection.MethodInfo[] methods = null;
-                        try
-                        {
-                            methods = imgConvType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                        }
-                        catch { }
-
-                        if (methods != null)
-                        {
-                            foreach (var m in methods)
-                            {
-                                if (m.Name != "LoadImage") continue;
-                                try
-                                {
-                                    var pars = m.GetParameters();
-                                    if (pars.Length >= 2 && pars[0].ParameterType == typeof(Texture2D) && pars[1].ParameterType == typeof(byte[]))
-                                    {
-                                        _loadImageMethod = m;
-                                        break;
-                                    }
-                                }
-                                catch
-                                {
-                                    // Безопасно пропускаем перегрузки с типами из netstandard 2.1 (ReadOnlySpan и т.д.)
-                                }
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка поиска UnityEngine.ImageConversion.LoadImage: {ex}");
+                    return (bool)LoadImageMethod.Invoke(null, new object[] { tex, data });
                 }
             }
-
-            if (_loadImageMethod != null)
+            catch (Exception ex)
             {
-                try
-                {
-                    var pCount = _loadImageMethod.GetParameters().Length;
-                    if (pCount == 2)
-                        return (bool)_loadImageMethod.Invoke(null, new object[] { tex, data });
-                    else if (pCount == 3)
-                        return (bool)_loadImageMethod.Invoke(null, new object[] { tex, data, false });
-                }
-                catch (Exception ex)
-                {
-                    RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка выполнения LoadImage: {ex}");
-                }
+                RunescapeMagicPlugin.Log.LogError($"[UI] Ошибка выполнения LoadImage: {ex}");
             }
 
             return false;
