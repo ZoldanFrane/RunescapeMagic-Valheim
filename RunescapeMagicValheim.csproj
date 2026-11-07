@@ -78,11 +78,15 @@
 
   <!-- Автоматическое копирование собранной DLL сразу в папку плагинов профиля Thunderstore -->
   <Target Name="CopyToPlugins" AfterTargets="Build">
-    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(BepInExProfileDir)\plugins\RunescapeMagic\" />
+    <PropertyGroup>
+      <TargetPluginFolder Condition="Exists('$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\')">$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\</TargetPluginFolder>
+      <TargetPluginFolder Condition="'$(TargetPluginFolder)' == ''">$(BepInExProfileDir)\plugins\RunescapeMagic\</TargetPluginFolder>
+    </PropertyGroup>
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TargetPluginFolder)" />
     <ItemGroup>
       <UIFiles Include="$(ProjectDir)UI\*.*" />
     </ItemGroup>
-    <Copy SourceFiles="@(UIFiles)" DestinationFolder="$(BepInExProfileDir)\plugins\RunescapeMagic\UI\" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(UIFiles)" DestinationFolder="$(TargetPluginFolder)UI\" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>
