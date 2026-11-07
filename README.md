@@ -1,7 +1,7 @@
 # Runescape Magic in Valheim
 
 <p align="center">
-  <img src="icon.png" alt="Runescape Magic Logo" width="160" height="160" />
+  <img src="https://raw.githubusercontent.com/ZoldanFrane/RunescapeMagic-Assets/main/icon.png" alt="Runescape Magic Logo" width="160" height="160" />
 </p>
 
 <p align="center">
