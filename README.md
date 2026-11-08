@@ -110,23 +110,23 @@
 
 ### 4. Area Harvest / Сбор в радиусе
 * **Skill:** Farming | **Required Level:** 0
-* **Usage:** Instantly harvests fully grown crops, wild berry bushes, mushrooms, and herbs in a wide area around the target point.
+* **Usage:** Instantly harvests fully grown crops, wild berry bushes, mushrooms, and herbs in a wide area around the target point. Can also be cast directly on loose ground items once auto-pickup unlocks.
 * **Upgrades:**
   - *Lvl 0:* 5m harvest radius (15 stamina).
   - *Lvl 20:* Radius expanded to 10m.
   - *Lvl 35:* Stamina cost reduced to 10.
-  - *Lvl 50:* Auto-pickup: harvested items are collected directly into your inventory!
+  - *Lvl 50:* Auto-pickup: harvested items and loose ground items are collected directly into your inventory! (Excludes fish to preserve fishing mechanics).
   - *Lvl 75:* 15m radius, stamina cost reduced to 5.
 
 ---
 
 * **Навык:** Земледелие (Farming) | **Требуемый уровень:** 0
-* **Применение:** Мгновенно собирает спелые сельскохозяйственные культуры, дикие ягоды, грибы и травы в широкой области вокруг точки прицеливания.
+* **Применение:** Мгновенно собирает спелые сельскохозяйственные культуры, дикие ягоды, грибы и травы в широкой области вокруг точки прицеливания. При открытом автосборе может применяться и на просто лежащие на земле предметы.
 * **Улучшения:**
   - *Ур. 0:* Радиус сбора 5 м (15 выносливости).
   - *Ур. 20:* Радиус сбора увеличен до 10 м.
   - *Ур. 35:* Затраты выносливости снижены до 10.
-  - *Ур. 50:* Автоматический сбор: ресурсы сразу притягиваются прямо в инвентарь!
+  - *Ур. 50:* Автоматический сбор: собранный урожай и лежащие на земле предметы переносятся прямо в инвентарь! (Рыба исключена для сохранения баланса рыбалки).
   - *Ур. 75:* Радиус 15 м, расход выносливости снижен до 5.
 
 ---
@@ -208,7 +208,7 @@
 
 ### 8. Overdrive / Овердрайв
 * **Skill:** Crafting | **Required Level:** 30
-* **Usage:** Overdrives crafting and smelting stations (smelters, blast furnaces, charcoal kilns, spinning wheels, windmills, fermenters), instantly processing queued materials. Consumes fuel/coal appropriately.
+* **Usage:** Overdrives crafting and smelting stations (smelters, blast furnaces, charcoal kilns, spinning wheels, windmills, fermenters, OdinShip fish press), instantly processing queued materials. Consumes fuel/coal appropriately.
 * **Upgrades:**
   - *Lvl 30:* Instantly processes up to 3 materials in stations within 10m.
   - *Lvl 45:* Processes up to 5 materials.
@@ -219,7 +219,7 @@
 ---
 
 * **Навык:** Ремесло (Crafting) | **Требуемый уровень:** 30
-* **Применение:** Перегружает ремесленные станции в радиусе действия (печи, доменные печи, углевыжигательные печи, прялки, мельницы, бродильные бочки), заставляя их мгновенно переработать порцию сырья с честным расходом угля и топлива.
+* **Применение:** Перегружает ремесленные станции в радиусе действия (печи, доменные печи, углевыжигательные печи, прялки, мельницы, бродильные бочки, рыбный пресс OdinShip), заставляя их мгновенно переработать порцию сырья с честным расходом угля и топлива.
 * **Улучшения:**
   - *Ур. 30:* Мгновенная переработка 3 ед. сырья в ремесленных станциях на дистанции 10 м.
   - *Ур. 45:* Переработка до 5 ед. сырья.
@@ -277,14 +277,14 @@
 - Fully compatible with **Valheim (Ashlands update & latest patches)**.
 - Works seamlessly in singleplayer and on dedicated multiplayer servers.
 - Compatible with modded equipment, weapons, armor, and tools.
-- Includes dynamic integration for **SeedBed** (`blacks7ar-SeedBed`).
+- Includes dynamic integration for **SeedBed** (`blacks7ar-SeedBed`) and **OdinShip** (Fish Press).
 
 ---
 
 - Полностью совместим с актуальной версией **Valheim (Ashlands update и свежие патчи)**.
 - Работает в одиночной игре и на выделенных мультиплеерных серверах.
 - Полная совместимость с любыми модами на предметы, оружие, броню и инструменты.
-- Встроена прямая поддержка модовых рассадниц **SeedBed** (`blacks7ar-SeedBed`).
+- Встроена прямая поддержка модовых рассадниц **SeedBed** (`blacks7ar-SeedBed`) и рыбного пресса **OdinShip**.
 
 ---
 

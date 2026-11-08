@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.0.5";
+        public const string PluginVersion = "1.0.6";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -1448,7 +1448,7 @@ namespace RunescapeMagicValheim
 
                 // 1. Созревшие культуры, кусты ягод, грибы
                 Pickable pickable = col.GetComponentInParent<Pickable>();
-                if (pickable != null && !picked.Contains(pickable) && pickable.CanBePicked())
+                if (pickable != null && col.GetComponentInParent<Fish>() == null && !picked.Contains(pickable) && pickable.CanBePicked())
                 {
                     picked.Add(pickable);
                     pickable.Interact(player, false, false);
@@ -1457,7 +1457,7 @@ namespace RunescapeMagicValheim
 
                 // 2. Подбираемые предметы на земле (PickableItem: ветки, камни)
                 PickableItem pickableItem = col.GetComponentInParent<PickableItem>();
-                if (pickableItem != null && !pickedItems.Contains(pickableItem))
+                if (pickableItem != null && col.GetComponentInParent<Fish>() == null && !pickedItems.Contains(pickableItem))
                 {
                     pickedItems.Add(pickableItem);
                     pickableItem.Interact(player, false, false);
@@ -1491,11 +1491,40 @@ namespace RunescapeMagicValheim
                 }
             }
 
-            if (collectedCount > 0)
+            // 4. На 50+ уровне проверяем наличие лежащих на земле предметов (ItemDrop), исключая рыбу
+            int groundItemsCount = 0;
+            if (autoPickup)
+            {
+                if (ItemDrop.s_instances != null)
+                {
+                    foreach (ItemDrop idrop in ItemDrop.s_instances)
+                    {
+                        if (idrop == null || idrop.m_itemData == null || idrop.m_nview == null || !idrop.m_nview.IsValid())
+                            continue;
+                        if (IsFish(idrop))
+                            continue;
+                        if (Vector3.Distance(center, idrop.transform.position) <= (radius + 2f))
+                        {
+                            groundItemsCount++;
+                        }
+                    }
+                }
+            }
+
+            if (collectedCount > 0 || groundItemsCount > 0)
             {
                 RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
-                player.RaiseSkill(Skills.SkillType.Farming, collectedCount * 0.5f);
-                player.Message(MessageHud.MessageType.Center, $"Собрано растений/ресурсов: {collectedCount}");
+                float skillGain = collectedCount > 0 ? (collectedCount * 0.5f) : Mathf.Clamp(groundItemsCount * 0.2f, 0.5f, 2.5f);
+                player.RaiseSkill(Skills.SkillType.Farming, skillGain);
+
+                if (collectedCount > 0)
+                {
+                    player.Message(MessageHud.MessageType.Center, $"Собрано растений/ресурсов: {collectedCount}");
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, $"Сбор предметов с земли: {groundItemsCount}");
+                }
 
                 // На 50+ уровне переносим выпавший лут прямо в инвентарь игрока
                 if (autoPickup)
@@ -1505,8 +1534,28 @@ namespace RunescapeMagicValheim
             }
             else
             {
-                player.Message(MessageHud.MessageType.Center, "В радиусе нет спелых растений для сбора!");
+                if (autoPickup)
+                {
+                    player.Message(MessageHud.MessageType.Center, "В радиусе нет растений или предметов для сбора!");
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, "В радиусе нет спелых растений для сбора!");
+                }
             }
+        }
+
+        private static bool IsFish(ItemDrop itemDrop)
+        {
+            if (itemDrop == null) return false;
+            if (itemDrop.GetComponentInParent<Fish>() != null || itemDrop.GetComponent<Fish>() != null)
+                return true;
+            if (itemDrop.m_itemData != null && itemDrop.m_itemData.m_shared != null)
+            {
+                if (itemDrop.m_itemData.m_shared.m_itemType == ItemDrop.ItemData.ItemType.Fish)
+                    return true;
+            }
+            return false;
         }
 
         private static IEnumerator AutoPickupRoutine(Player player, Vector3 center, float radius)
@@ -1527,7 +1576,7 @@ namespace RunescapeMagicValheim
                     {
                         if (i >= ItemDrop.s_instances.Count) continue;
                         ItemDrop itemDrop = ItemDrop.s_instances[i];
-                        if (itemDrop == null || collectedDrops.Contains(itemDrop)) continue;
+                        if (itemDrop == null || collectedDrops.Contains(itemDrop) || IsFish(itemDrop)) continue;
                         if (Vector3.Distance(center, itemDrop.transform.position) > radius) continue;
 
                         if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
@@ -1555,7 +1604,7 @@ namespace RunescapeMagicValheim
                 {
                     if (c == null) continue;
                     ItemDrop itemDrop = c.GetComponentInParent<ItemDrop>();
-                    if (itemDrop == null || collectedDrops.Contains(itemDrop)) continue;
+                    if (itemDrop == null || collectedDrops.Contains(itemDrop) || IsFish(itemDrop)) continue;
 
                     if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
                         continue;
@@ -1977,6 +2026,7 @@ namespace RunescapeMagicValheim
 
             HashSet<Smelter> smelters = new HashSet<Smelter>();
             HashSet<Fermenter> fermenters = new HashSet<Fermenter>();
+            HashSet<GameObject> processedModStations = new HashSet<GameObject>();
             int processedTotal = 0;
             bool lackedFuel = false;
 
@@ -2053,6 +2103,73 @@ namespace RunescapeMagicValheim
                             fermenter.m_fermentationDuration = 0f;
                         }
                         processedTotal++;
+                    }
+                }
+
+                // 3. Модовые ремесленные станции (OdinShip: FishPress)
+                GameObject root = col.transform.root.gameObject;
+                if (!processedModStations.Contains(root))
+                {
+                    MonoBehaviour[] scripts = root.GetComponentsInChildren<MonoBehaviour>();
+                    foreach (MonoBehaviour mb in scripts)
+                    {
+                        if (mb == null) continue;
+                        if (mb.GetType().Name == "FishPress")
+                        {
+                            processedModStations.Add(root);
+                            ZNetView nv = mb.GetComponent<ZNetView>() ?? root.GetComponent<ZNetView>();
+                            if (nv != null && nv.IsValid())
+                            {
+                                nv.ClaimOwnership();
+                            }
+
+                            MethodInfo isProc = mb.GetType().GetMethod("IsProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo finishProc = mb.GetType().GetMethod("FinishProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo startProc = mb.GetType().GetMethod("StartProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo getQueue = mb.GetType().GetMethod("GetQueueSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo updateVisuals = mb.GetType().GetMethod("UpdateStateVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                            FieldInfo reqField = mb.GetType().GetField("m_fishRequired", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            int fishReq = reqField != null ? (int)reqField.GetValue(mb) : 1;
+                            if (fishReq <= 0) fishReq = 1;
+
+                            int stationProcessed = 0;
+
+                            // 1. Завершаем текущий процесс прессования рыбы (если идет прямо сейчас)
+                            bool currentlyProcessing = isProc != null && (bool)isProc.Invoke(mb, null);
+                            if (currentlyProcessing)
+                            {
+                                finishProc?.Invoke(mb, null);
+                                stationProcessed++;
+                                processedTotal++;
+                            }
+
+                            // 2. Перерабатываем рыбу из очереди до лимита овердрайва (maxItemsPerStation)
+                            while (stationProcessed < maxItemsPerStation && getQueue != null)
+                            {
+                                int queue = (int)getQueue.Invoke(mb, null);
+                                if (queue < fishReq) break;
+
+                                startProc?.Invoke(mb, null);
+                                finishProc?.Invoke(mb, null);
+                                stationProcessed++;
+                                processedTotal++;
+                            }
+
+                            // 3. Если после овердрайва в очереди осталась рыба, запускаем следующий обычный цикл
+                            if (getQueue != null && startProc != null && isProc != null)
+                            {
+                                int queue = (int)getQueue.Invoke(mb, null);
+                                bool isP = (bool)isProc.Invoke(mb, null);
+                                if (queue >= fishReq && !isP)
+                                {
+                                    startProc.Invoke(mb, null);
+                                }
+                            }
+
+                            updateVisuals?.Invoke(mb, null);
+                            break;
+                        }
                     }
                 }
             }
