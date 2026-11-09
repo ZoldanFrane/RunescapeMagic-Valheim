@@ -1048,10 +1048,67 @@ namespace RunescapeMagicValheim
             });
         }
 
+        private static bool IsTreeStump(Destructible dest, GameObject rootObj)
+        {
+            if (dest == null && rootObj == null) return false;
+
+            // Категорически исключаем живых существ, стоячие деревья и постройки
+            if (dest != null && dest.GetComponentInParent<Character>() != null) return false;
+            if (rootObj != null && rootObj.GetComponentInParent<TreeBase>() != null) return false;
+            if (dest != null && dest.GetComponentInParent<WearNTear>() != null) return false;
+
+            string dName = dest != null ? Utils.GetPrefabName(dest.gameObject).ToLowerInvariant() : "";
+            string rName = rootObj != null ? Utils.GetPrefabName(rootObj).ToLowerInvariant() : "";
+
+            // Исключаем любые камни, скалы, руды, металл и кустарники
+            if (dName.Contains("rock") || dName.Contains("stone") || dName.Contains("boulder") ||
+                dName.Contains("cliff") || dName.Contains("ore") || dName.Contains("flint") ||
+                dName.Contains("obsidian") || dName.Contains("copper") || dName.Contains("tin") ||
+                dName.Contains("silver") || dName.Contains("iron") || dName.Contains("metal") ||
+                dName.Contains("bush") || dName.Contains("shrub") || dName.Contains("sapling") ||
+                rName.Contains("rock") || rName.Contains("stone") || rName.Contains("boulder") ||
+                rName.Contains("cliff") || rName.Contains("ore") || rName.Contains("flint") ||
+                rName.Contains("obsidian") || rName.Contains("copper") || rName.Contains("tin") ||
+                rName.Contains("silver") || rName.Contains("iron") || rName.Contains("metal") ||
+                rName.Contains("bush") || rName.Contains("shrub") || rName.Contains("sapling"))
+            {
+                return false;
+            }
+
+            // Пни в Valheim имеют имена префабов, содержащие stub, stump или stubbe
+            if (dName.Contains("stub") || dName.Contains("stump") || dName.Contains("stubbe") ||
+                rName.Contains("stub") || rName.Contains("stump") || rName.Contains("stubbe"))
+            {
+                return true;
+            }
+
+            // Дополнительная проверка типа деструктора
+            if (dest != null && dest.GetDestructibleType() == DestructibleType.Tree)
+            {
+                // Не должно быть иммунитета или игнорирования урона топором (m_chop)
+                if (dest.m_damages.m_chop != HitData.DamageModifier.Immune && dest.m_damages.m_chop != HitData.DamageModifier.Ignore)
+                {
+                    // Убеждаемся, что это не целое дерево без TreeBase
+                    if (!dName.Contains("tree") && !dName.Contains("birch") && !dName.Contains("oak") && !dName.Contains("beech"))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         private static void SplinterTargetedAtPoint(Player player, Vector3 impactPoint, Collider hitCol, float staminaCost)
         {
             TreeLog targetLog = hitCol != null ? hitCol.GetComponentInParent<TreeLog>() : null;
             Destructible targetDest = hitCol != null ? hitCol.GetComponentInParent<Destructible>() : null;
+            GameObject rootObj = hitCol != null ? hitCol.transform.root.gameObject : null;
+
+            if (targetDest != null && !IsTreeStump(targetDest, rootObj))
+            {
+                targetDest = null;
+            }
 
             // 1. Проверяем объект под прицелом (GetHoverObject)
             if (targetLog == null && targetDest == null && player != null)
@@ -1060,7 +1117,11 @@ namespace RunescapeMagicValheim
                 if (hover != null)
                 {
                     targetLog = hover.GetComponentInParent<TreeLog>();
-                    targetDest = hover.GetComponentInParent<Destructible>();
+                    Destructible hoverDest = hover.GetComponentInParent<Destructible>();
+                    if (hoverDest != null && IsTreeStump(hoverDest, hover.transform.root.gameObject))
+                    {
+                        targetDest = hoverDest;
+                    }
                 }
             }
 
@@ -1073,8 +1134,13 @@ namespace RunescapeMagicValheim
                     if (c == null) continue;
                     targetLog = c.GetComponentInParent<TreeLog>();
                     if (targetLog != null) break;
-                    targetDest = c.GetComponentInParent<Destructible>();
-                    if (targetDest != null && c.GetComponentInParent<Character>() == null && c.GetComponentInParent<TreeBase>() == null) break;
+
+                    Destructible nearDest = c.GetComponentInParent<Destructible>();
+                    if (nearDest != null && IsTreeStump(nearDest, c.transform.root.gameObject))
+                    {
+                        targetDest = nearDest;
+                        break;
+                    }
                 }
             }
 
@@ -1088,13 +1154,18 @@ namespace RunescapeMagicValheim
                 RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
                 RunescapeMagicPlugin.Instance.StartCoroutine(SplinterSingleLogRoutine(player, targetLog));
             }
-            else if (targetDest != null && targetDest.GetComponentInParent<Character>() == null && targetDest.GetComponentInParent<TreeBase>() == null)
+            else if (targetDest != null)
             {
+                if (!HasAxe(player, targetDest.m_minToolTier, out string axeFail))
+                {
+                    player.Message(MessageHud.MessageType.Center, axeFail);
+                    return;
+                }
+
                 RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
                 if (targetDest.m_nview != null && targetDest.m_nview.IsValid()) targetDest.m_nview.ClaimOwnership();
                 HitData hit = new HitData();
                 hit.m_damage.m_chop = 999f;
-                hit.m_damage.m_damage = 999f;
                 hit.m_point = targetDest.transform.position;
                 hit.m_toolTier = 10;
                 hit.SetAttacker(player);
