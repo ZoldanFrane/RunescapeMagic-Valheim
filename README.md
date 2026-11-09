@@ -58,8 +58,8 @@ Each spell features specialized operational modes designed for precise Viking ut
   - **EN:** Shatters all fallen tree trunks and log segments into processed wood across the full spell radius.
   - **RU:** Раскалывает все упавшие бревна и обрубки на готовые дрова в полном радиусе действия заклинания.
 * **Mode 1: Targeted Splinter / Точный режим**
-  - **EN:** Targets only the specific fallen log or tree stump under your crosshair. Health cost is completely removed (0 HP, 0 Stamina) for effortless stump clearing.
-  - **RU:** Действует точечно на конкретное бревно или древесный пенёк под прицелом. Затраты здоровья и выносливости полностью сняты (0 ОЗ, 0 выносливости), позволяя быстро и бесплатно выкорчевывать пни.
+  - **EN:** Targets only the specific fallen log or tree stump under your crosshair. Health cost is completely removed (0 HP, normal stamina cost applies) for effortless stump and log clearing.
+  - **RU:** Действует точечно на конкретное бревно или древесный пенёк под прицелом. Затраты здоровья полностью сняты (0 ОЗ, расходуется только обычная выносливость), позволяя безопасно выкорчевывать пни и расщеплять бревна.
 
 ---
 
@@ -299,7 +299,7 @@ Each spell features specialized operational modes designed for precise Viking ut
   - Overhauled right-side radial menu info panel to showcase detailed mode breakdown, controls hint, and dynamic level progression.
 - **Improvements & Fixes:**
   - Refined Brushcutter mode to clear shrubs, bushes, undergrowth, and young beech/birch saplings while strictly protecting rocks, mineral veins, adult trees, and stumps.
-  - Free stump removal in Targeted Splinter mode (0 HP, 0 Stamina cost).
+  - Health cost removed in Targeted Splinter mode (0 HP, normal stamina cost applies).
   - Added remote network RPC `RPC_RunescapeRepairInventory` for repairing other players' inventories seamlessly in multiplayer.
   - Fixed Fortification overshield repair logic and piece health bounds.
   - Refined Ground Pickup mode to only collect loose ground items without harvesting plants.
