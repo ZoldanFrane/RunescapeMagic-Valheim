@@ -265,7 +265,7 @@ namespace RunescapeMagicValheim
             _upgradesHeaderTitle.fontStyle = FontStyle.Bold;
             _upgradesHeaderTitle.alignment = TextAnchor.MiddleCenter;
             _upgradesHeaderTitle.color = new Color(1f, 0.82f, 0.35f);
-            _upgradesHeaderTitle.text = "ПРОГРЕСС И УЛУЧШЕНИЯ";
+            _upgradesHeaderTitle.text = "ОПИСАНИЕ";
             _upgradesHeaderTitle.supportRichText = true;
 
             Shadow titleShadow = titleObj.GetComponent<Shadow>();
@@ -352,6 +352,7 @@ namespace RunescapeMagicValheim
             }
 
             UpdateSelectionVisuals(player);
+            TopModePlateUI.Instance?.OnModeChanged();
 
             // Разблокируем курсор через менеджер курсора Valheim
             ZCursor.LockState = CursorLockMode.None;
@@ -368,6 +369,7 @@ namespace RunescapeMagicValheim
                 if (selected.IsUnlocked)
                 {
                     RunescapeMagicPlugin.CurrentSpell = selected.Spell;
+                    TopModePlateUI.Instance?.OnModeChanged();
                     SpellUIInfo info = GetSpellInfo(player, selected.Spell);
                     player.Message(MessageHud.MessageType.TopLeft, $"Выбрано заклинание: {info.Name}");
                 }
@@ -397,6 +399,22 @@ namespace RunescapeMagicValheim
             ZCursor.LockState = CursorLockMode.None;
             ZCursor.Show();
 
+            // Переключение режимов колесиком мыши при открытом меню (удержание ПКМ)
+            float scroll = Input.GetAxis("Mouse ScrollWheel");
+            if (Mathf.Abs(scroll) > 0.01f)
+            {
+                int dir = scroll > 0f ? 1 : -1;
+                int targetIdx = (_hoveredIndex >= 0 && _hoveredIndex < _slots.Count) ? _hoveredIndex : (int)RunescapeMagicPlugin.CurrentSpell;
+                if (targetIdx >= 0 && targetIdx < _slots.Count)
+                {
+                    SpellType spell = _slots[targetIdx].Spell;
+                    SpellModeManager.CycleMode(player, spell, dir);
+                    TopModePlateUI.Instance?.OnModeChanged();
+                    UpdateSelectionVisuals(player);
+            TopModePlateUI.Instance?.OnModeChanged();
+                }
+            }
+
             Vector2 center = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
             Vector2 mouseOffset = (Vector2)Input.mousePosition - center;
 
@@ -416,6 +434,7 @@ namespace RunescapeMagicValheim
                 {
                     _hoveredIndex = sector;
                     UpdateSelectionVisuals(player);
+            TopModePlateUI.Instance?.OnModeChanged();
                 }
             }
             else
@@ -509,7 +528,8 @@ namespace RunescapeMagicValheim
                     costStr += $"  /  <color=#ff6666>{info.HealthCost} ОЗ</color>";
                 _costText.text = costStr;
 
-                _statsText.text = info.ExtraStats;
+                SpellModeInfo curMode = SpellModeManager.GetCurrentModeInfo(player, _slots[_hoveredIndex].Spell);
+                _statsText.text = $"{info.ExtraStats}  •  <color=#FFDE59>[{curMode.Name}]</color>";
 
                 float bonus = info.EffectiveLevel - info.BaseLevel;
                 string bonusStr = bonus > 0f ? $" <color=#66ff66>({info.BaseLevel}+{bonus})</color>" : "";
@@ -522,27 +542,76 @@ namespace RunescapeMagicValheim
                 // Обновляем панель улучшений справа от колеса
                 if (_upgradesPanel != null)
                 {
+                    _upgradesHeaderTitle.text = "ОПИСАНИЕ";
                     _upgradesHeaderSubtitle.text = $"<color=#{ColorUtility.ToHtmlStringRGB(info.Tint)}>{info.Name}</color> — {skillRu} ({info.EffectiveLevel} ур.)";
 
-                    List<SpellMilestone> milestones = GetSpellMilestones(info.Spell);
                     System.Text.StringBuilder sb = new System.Text.StringBuilder();
 
+                    // 1. Описание режимов (смена колесиком мыши)
+                    sb.AppendLine("<color=#FFD700><b>Описание режимов:</b></color> <color=#A0A0A0><i>(Смена: Колесо мыши)</i></color>");
+                    if (SpellModeManager.Modes.TryGetValue(info.Spell, out SpellModeInfo[] modeList))
+                    {
+                        int activeModeIdx = SpellModeManager.GetCurrentMode(info.Spell);
+                        for (int mIdx = 0; mIdx < modeList.Length; mIdx++)
+                        {
+                            SpellModeInfo mInfo = modeList[mIdx];
+                            bool isCurrent = (mIdx == activeModeIdx);
+                            bool isUnlocked = mInfo.IsUnlocked(player);
+
+                            if (isCurrent)
+                            {
+                                sb.AppendLine($"▶ <color=#FFE066><b>{mInfo.Name}</b></color> — <color=#FFF5CC>{mInfo.Description}</color>");
+                            }
+                            else if (isUnlocked)
+                            {
+                                sb.AppendLine($"   <color=#C8C8C8><b>{mInfo.Name}</b></color> — <color=#A8A8A8>{mInfo.Description}</color>");
+                            }
+                            else
+                            {
+                                sb.AppendLine($"   <color=#666666><b>{mInfo.Name}</b> — {mInfo.Description} <color=#FF6666>[Требуется {mInfo.ReqLevel:0} ур.]</color></color>");
+                            }
+                        }
+                    }
+
+                    sb.AppendLine("\n<color=#A07830>───────────────────────────────────────</color>\n");
+
+                    // 2. Прогресс и улучшения
+                    sb.AppendLine("<color=#FFD700><b>Прогресс и улучшения:</b></color>");
+                    List<SpellMilestone> milestones = GetSpellMilestones(info.Spell);
                     foreach (var m in milestones)
                     {
                         bool isMilestoneUnlocked = info.EffectiveLevel >= m.Level;
-                        string colorHex = isMilestoneUnlocked ? "#ffd700" : "#808080";
-                        sb.AppendLine($"<color={colorHex}>• <b>Ур. {m.Level}:</b> {m.Description}</color>\n");
+                        string colorHex = isMilestoneUnlocked ? "#FFD700" : "#707070";
+                        sb.AppendLine($"<color={colorHex}>• <b>Ур. {m.Level}:</b> {m.Description}</color>");
                     }
 
                     _upgradesContentText.text = sb.ToString().TrimEnd();
+
+                    // Динамическое расширение высоты панели при большом количестве текста
+                    RectTransform upgRect = _upgradesPanel.GetComponent<RectTransform>();
+                    if (upgRect != null)
+                    {
+                        float preferredHeight = _upgradesContentText.preferredHeight;
+                        upgRect.sizeDelta = new Vector2(380f, Mathf.Max(520f, preferredHeight + 95f));
+                    }
                 }
             }
+        }
+
+        public static SpellType GetActiveOrHoveredSpell()
+        {
+            if (IsVisible && Instance != null && Instance._hoveredIndex >= 0 && Instance._hoveredIndex < Instance._slots.Count)
+            {
+                return Instance._slots[Instance._hoveredIndex].Spell;
+            }
+            return RunescapeMagicPlugin.CurrentSpell;
         }
 
         public static SpellUIInfo GetSpellInfo(Player player, SpellType spell)
         {
             SpellUIInfo info = new SpellUIInfo();
             info.Spell = spell;
+            int mode = SpellModeManager.GetCurrentMode(spell);
 
             switch (spell)
             {
@@ -555,7 +624,9 @@ namespace RunescapeMagicValheim
                     info.StaminaCost = info.EffectiveLevel >= 75f ? 5f : (info.EffectiveLevel >= 35f ? 15f : 25f);
                     info.HealthCost = 0f;
                     float axeRadius = info.EffectiveLevel >= 55f ? 10f : 5f;
-                    info.ExtraStats = $"Дальность: 20м | Радиус: {axeRadius}м";
+                    info.ExtraStats = mode == 1
+                        ? $"Кусторез | Дальность: 20м | Радиус: {axeRadius}м"
+                        : $"Лесоруб | Дальность: 20м | Радиус: {axeRadius}м";
                     break;
 
                 case SpellType.Splinter:
@@ -565,9 +636,11 @@ namespace RunescapeMagicValheim
                     info.Tint = new Color(1f, 0.85f, 0.45f);
                     info.ReqLevel = 25f;
                     info.StaminaCost = info.EffectiveLevel >= 75f ? 15f : 25f;
-                    info.HealthCost = info.EffectiveLevel >= 55f ? 0f : 10f;
+                    info.HealthCost = (mode == 1 || info.EffectiveLevel >= 55f) ? 0f : 10f;
                     float splRadius = info.EffectiveLevel >= 90f ? 25f : (info.EffectiveLevel >= 35f ? 15f : 10f);
-                    info.ExtraStats = $"Радиус расщепления: {splRadius}м";
+                    info.ExtraStats = mode == 1
+                        ? "Точечное расщепление (дерево / пенёк)"
+                        : $"Радиус расщепления: {splRadius}м";
                     break;
 
                 case SpellType.OreBlast:
@@ -576,10 +649,25 @@ namespace RunescapeMagicValheim
                     info.IconPrefab = "PickaxeIron";
                     info.Tint = new Color(0.55f, 0.85f, 1f);
                     info.ReqLevel = 0f;
-                    info.StaminaCost = info.EffectiveLevel >= 55f ? 10f : 25f;
-                    info.HealthCost = 0f;
                     float oreRadius = info.EffectiveLevel >= 75f ? 6f : (info.EffectiveLevel >= 35f ? 4f : 2f);
-                    info.ExtraStats = $"Радиус взрыва: {oreRadius}м";
+                    if (mode == 1) // Компактный режим
+                    {
+                        info.StaminaCost = Mathf.Ceil((info.EffectiveLevel >= 55f ? 10f : 25f) * 0.5f);
+                        info.HealthCost = 0f;
+                        info.ExtraStats = $"Компактный радиус: {oreRadius * 0.5f:0.#}м";
+                    }
+                    else if (mode == 2) // Режим кирки
+                    {
+                        info.StaminaCost = info.EffectiveLevel >= 55f ? 5f : 15f;
+                        info.HealthCost = 0f;
+                        info.ExtraStats = "Точечный удар киркой";
+                    }
+                    else
+                    {
+                        info.StaminaCost = info.EffectiveLevel >= 55f ? 10f : 25f;
+                        info.HealthCost = 0f;
+                        info.ExtraStats = $"Радиус взрыва: {oreRadius}м";
+                    }
                     break;
 
                 case SpellType.AreaHarvest:
@@ -591,7 +679,12 @@ namespace RunescapeMagicValheim
                     info.StaminaCost = info.EffectiveLevel >= 75f ? 5f : (info.EffectiveLevel >= 35f ? 10f : 15f);
                     info.HealthCost = 0f;
                     float harvRadius = info.EffectiveLevel >= 75f ? 15f : (info.EffectiveLevel >= 20f ? 10f : 5f);
-                    info.ExtraStats = info.EffectiveLevel >= 50f ? $"Радиус: {harvRadius}м (Автоподбор)" : $"Радиус: {harvRadius}м";
+                    if (mode == 1)
+                        info.ExtraStats = $"Сбор с земли в инвентарь: {harvRadius}м";
+                    else if (mode == 2)
+                        info.ExtraStats = $"Точечный сбор одного вида: {harvRadius}м";
+                    else
+                        info.ExtraStats = info.EffectiveLevel >= 50f ? $"Радиус: {harvRadius}м (Автоподбор)" : $"Радиус: {harvRadius}м";
                     break;
 
                 case SpellType.InstantGrow:
@@ -600,10 +693,27 @@ namespace RunescapeMagicValheim
                     info.IconPrefab = "Raspberries";
                     info.Tint = Color.white;
                     info.ReqLevel = 25f;
-                    info.StaminaCost = info.EffectiveLevel >= 75f ? 15f : 30f;
-                    info.HealthCost = info.EffectiveLevel >= 90f ? 0f : (info.EffectiveLevel >= 75f ? 5f : 15f);
+                    float baseGrowStam = info.EffectiveLevel >= 75f ? 15f : 30f;
+                    float baseGrowHp = info.EffectiveLevel >= 90f ? 0f : (info.EffectiveLevel >= 75f ? 5f : 15f);
                     float growRadius = info.EffectiveLevel >= 90f ? 15f : (info.EffectiveLevel >= 50f ? 10f : 6f);
-                    info.ExtraStats = $"Радиус роста: {growRadius}м";
+                    if (mode == 1)
+                    {
+                        info.StaminaCost = Mathf.Ceil(baseGrowStam * 0.5f);
+                        info.HealthCost = Mathf.Ceil(baseGrowHp * 0.5f);
+                        info.ExtraStats = $"Компактный радиус: {growRadius * 0.5f:0.#}м";
+                    }
+                    else if (mode == 2)
+                    {
+                        info.StaminaCost = Mathf.Ceil(baseGrowStam * 0.5f);
+                        info.HealthCost = Mathf.Ceil(baseGrowHp * 0.5f);
+                        info.ExtraStats = $"Рост культуры одного вида: {growRadius}м";
+                    }
+                    else
+                    {
+                        info.StaminaCost = baseGrowStam;
+                        info.HealthCost = baseGrowHp;
+                        info.ExtraStats = $"Радиус роста: {growRadius}м";
+                    }
                     break;
 
                 case SpellType.InventoryRepair:
@@ -615,7 +725,9 @@ namespace RunescapeMagicValheim
                     info.StaminaCost = info.EffectiveLevel >= 65f ? 15f : 30f;
                     info.HealthCost = info.EffectiveLevel >= 85f ? 0f : (info.EffectiveLevel >= 65f ? 10f : 20f);
                     int repPct = info.EffectiveLevel >= 50f ? 100 : (info.EffectiveLevel >= 40f ? 80 : (info.EffectiveLevel >= 30f ? 60 : (info.EffectiveLevel >= 20f ? 40 : 20)));
-                    info.ExtraStats = $"Восстанавливает {repPct}% прочности";
+                    info.ExtraStats = mode == 1
+                        ? $"Сундук / стойка / союзник ({repPct}%)"
+                        : $"Свой инвентарь ({repPct}% прочности)";
                     break;
 
                 case SpellType.PieceRepair:
@@ -625,9 +737,11 @@ namespace RunescapeMagicValheim
                     info.Tint = new Color(0.95f, 0.75f, 0.5f);
                     info.ReqLevel = 0f;
                     info.StaminaCost = info.EffectiveLevel >= 60f ? 10f : 25f;
-                    info.HealthCost = 0f;
+                    info.HealthCost = mode == 1 ? 10f : 0f;
                     float repRadius = info.EffectiveLevel >= 80f ? 25f : (info.EffectiveLevel >= 25f ? 15f : 10f);
-                    info.ExtraStats = $"Радиус ремонта: {repRadius}м";
+                    info.ExtraStats = mode == 1
+                        ? $"Укрепление до 150%: {repRadius}м"
+                        : $"Ремонт построек: {repRadius}м";
                     break;
 
                 case SpellType.Overdrive:
@@ -636,11 +750,22 @@ namespace RunescapeMagicValheim
                     info.IconPrefab = "SurtlingCore";
                     info.Tint = new Color(1f, 0.45f, 0.2f);
                     info.ReqLevel = 30f;
-                    info.StaminaCost = info.EffectiveLevel >= 75f ? 20f : 40f;
-                    info.HealthCost = info.EffectiveLevel >= 90f ? 0f : (info.EffectiveLevel >= 75f ? 10f : 25f);
+                    float baseOdStam = info.EffectiveLevel >= 75f ? 20f : 40f;
+                    float baseOdHp = info.EffectiveLevel >= 90f ? 0f : (info.EffectiveLevel >= 75f ? 10f : 25f);
                     float odRadius = info.EffectiveLevel >= 60f ? 15f : 10f;
                     string countStr = info.EffectiveLevel >= 90f ? "Всё сырьё" : (info.EffectiveLevel >= 60f ? "До 10 ед." : (info.EffectiveLevel >= 45f ? "До 5 ед." : "До 3 ед."));
-                    info.ExtraStats = $"Радиус: {odRadius}м ({countStr})";
+                    if (mode == 1)
+                    {
+                        info.StaminaCost = Mathf.Ceil(baseOdStam * 0.5f);
+                        info.HealthCost = Mathf.Ceil(baseOdHp * 0.5f);
+                        info.ExtraStats = $"Точечный разгон ({countStr})";
+                    }
+                    else
+                    {
+                        info.StaminaCost = baseOdStam;
+                        info.HealthCost = baseOdHp;
+                        info.ExtraStats = $"Радиус: {odRadius}м ({countStr})";
+                    }
                     break;
             }
 
@@ -1096,6 +1221,7 @@ namespace RunescapeMagicValheim
         public static void OnHudAwakePostfix(Hud __instance)
         {
             SpellRadialMenu.Init(__instance.m_rootObject.transform);
+            TopModePlateUI.Init(__instance.m_rootObject.transform);
         }
 
         // Блокируем вращение взгляда игрока во время выбора заклинания

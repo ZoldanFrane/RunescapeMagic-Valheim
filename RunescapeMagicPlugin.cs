@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.0.6";
+        public const string PluginVersion = "1.1.0";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -254,6 +254,7 @@ namespace RunescapeMagicValheim
             // Отключаем защитную стойку блока, пока в руках палочка бытовой магии
             __instance.m_blocking = false;
 
+            // Переключение режимов теперь осуществляется при открытом меню (удержание ПКМ) колесиком мыши
             if (Input.GetMouseButtonDown(1))
             {
                 SpellRadialMenu.Instance?.Show(__instance);
@@ -292,6 +293,61 @@ namespace RunescapeMagicValheim
                 case SpellType.Overdrive:
                     SpellMechanics.CastOverdrive(player);
                     break;
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(GameCamera), nameof(GameCamera.UpdateCamera))]
+    public static class GameCameraScrollPatch
+    {
+        private static float _savedDistance;
+
+        [HarmonyPrefix]
+        public static void Prefix(GameCamera __instance)
+        {
+            _savedDistance = __instance.m_distance;
+        }
+
+        [HarmonyPostfix]
+        public static void Postfix(GameCamera __instance)
+        {
+            if (Player.m_localPlayer != null && WandInputPatches.IsHoldingMagicWand(Player.m_localPlayer))
+            {
+                if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt))
+                {
+                    __instance.m_distance = _savedDistance;
+                }
+            }
+        }
+    }
+
+    [HarmonyPatch(typeof(Player), nameof(Player.Awake))]
+    public static class PlayerRpcPatches
+    {
+        [HarmonyPostfix]
+        public static void OnPlayerAwake(Player __instance)
+        {
+            if (ZRoutedRpc.instance != null)
+            {
+                ZRoutedRpc.instance.Register<string, float>("RPC_RunescapeRepairInventory", (sender, casterName, repairRatio) =>
+                {
+                    if (Player.m_localPlayer == null) return;
+                    int repaired = 0;
+                    foreach (var item in Player.m_localPlayer.GetInventory().GetAllItems())
+                    {
+                        if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
+                        {
+                            float maxDur = item.GetMaxDurability();
+                            item.m_durability = Mathf.Min(maxDur, item.m_durability + maxDur * repairRatio);
+                            repaired++;
+                        }
+                    }
+                    if (repaired > 0)
+                    {
+                        SpellMechanics.PlayRepairSound(Player.m_localPlayer.transform.position);
+                        Player.m_localPlayer.Message(MessageHud.MessageType.Center, $"{casterName} восстановил прочность вашего снаряжения!");
+                    }
+                });
             }
         }
     }
@@ -565,7 +621,9 @@ namespace RunescapeMagicValheim
             float speed = 12f;
             float maxDistance = 15f;
             float traveled = 0f;
+            int axeMode = SpellModeManager.GetCurrentMode(SpellType.SpectralAxe);
             HashSet<TreeBase> hitTrees = new HashSet<TreeBase>();
+            HashSet<Destructible> hitDestructibles = new HashSet<Destructible>();
             bool resourcesConsumed = false;
 
             // Создаем горизонтальный призрачный топор с центром вращения строго на середине рукояти
@@ -602,32 +660,123 @@ namespace RunescapeMagicValheim
                 foreach (Collider col in colliders)
                 {
                     if (col == null) continue;
-                    // Только TreeBase (стоящие не срубленные деревья; бревна TreeLog и пеньки Destructible игнорируются)
-                    TreeBase tree = col.GetComponentInParent<TreeBase>();
-                    if (tree != null && !hitTrees.Contains(tree))
+
+                    // 1. В режиме лесоруба (axeMode == 0) срубаем только целые стоячие деревья
+                    if (axeMode == 0)
                     {
-                        if (!HasAxe(player, tree.m_minToolTier, out string axeFail))
+                        TreeBase tree = col.GetComponentInParent<TreeBase>();
+                        if (tree != null && !hitTrees.Contains(tree))
                         {
+                            if (!HasAxe(player, tree.m_minToolTier, out string axeFail))
+                            {
+                                continue;
+                            }
+
+                            if (!resourcesConsumed)
+                            {
+                                resourcesConsumed = true;
+                                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                            }
+
+                            hitTrees.Add(tree);
+
+                            HitData hit = new HitData();
+                            hit.m_damage.m_chop = 999f;
+                            hit.m_point = col.bounds.center;
+                            hit.m_toolTier = 10;
+                            hit.SetAttacker(player);
+
+                            float hits = Mathf.Max(1f, tree.m_health / GetMinAxeChopDamage(tree.m_minToolTier));
+                            tree.Damage(hit);
+                            player.RaiseSkill(Skills.SkillType.WoodCutting, hits);
+                        }
+                    }
+                    // 2. В режиме кустореза (axeMode == 1) срубаем ТОЛЬКО растительность:
+                    // кустарники, вереск, поросль, молодняк (Beech_small / бук, Birch_small / береза, пихты) и старые поваленные декоративные стволы.
+                    // Категорически игнорируются:
+                    // - Камни, скалы, руды, валуны (Rock, Stone, MineRock)
+                    // - Взрослые большие деревья (для них предназначен Режим лесоруба)
+                    // - Пеньки деревьев (для них предназначен Точечный режим расщепления)
+                    // - Бревна TreeLog (для них предназначено Расщепление)
+                    // - Постройки игроков и персонажи
+                    else if (axeMode == 1)
+                    {
+                        if (col.GetComponentInParent<TreeLog>() != null) continue;
+                        if (col.GetComponentInParent<Character>() != null) continue;
+                        if (col.GetComponentInParent<WearNTear>() != null) continue;
+                        if (col.GetComponentInParent<Piece>() != null) continue;
+                        if (col.GetComponentInParent<MineRock>() != null || col.GetComponentInParent<MineRock5>() != null) continue;
+
+                        // А) Проверка на TreeBase (молодняк: Beech_small / молодой бук, Birch_small / молодая береза, саженцы)
+                        TreeBase tree = col.GetComponentInParent<TreeBase>();
+                        if (tree != null)
+                        {
+                            string tName = tree.gameObject.name.ToLowerInvariant();
+                            bool isSmallTree = tName.Contains("small") || tName.Contains("sapling") || tree.m_logPrefab == null;
+
+                            if (isSmallTree && !hitTrees.Contains(tree))
+                            {
+                                if (!HasAxe(player, tree.m_minToolTier, out string axeFail))
+                                    continue;
+
+                                if (!resourcesConsumed)
+                                {
+                                    resourcesConsumed = true;
+                                    RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                                }
+
+                                hitTrees.Add(tree);
+
+                                HitData hit = new HitData();
+                                hit.m_damage.m_chop = 999f;
+                                hit.m_point = col.bounds.center;
+                                hit.m_toolTier = 10;
+                                hit.SetAttacker(player);
+
+                                tree.Damage(hit);
+                                player.RaiseSkill(Skills.SkillType.WoodCutting, 1f);
+                            }
                             continue;
                         }
 
-                        if (!resourcesConsumed)
+                        // Б) Проверка на Destructible (кустарники, вереск, малые пихты, поваленные замшелые стволы)
+                        Destructible dest = col.GetComponentInParent<Destructible>();
+                        if (dest != null && !hitDestructibles.Contains(dest))
                         {
-                            resourcesConsumed = true;
-                            RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                            string dName = dest.gameObject.name.ToLowerInvariant();
+
+                            // Исключаем пеньки деревьев
+                            if (dName.Contains("stub") || dName.Contains("stump"))
+                                continue;
+
+                            // Исключаем любые камни, скалы, руды, валуны, кремний и металл
+                            if (dName.Contains("rock") || dName.Contains("stone") || dName.Contains("boulder") ||
+                                dName.Contains("cliff") || dName.Contains("ore") || dName.Contains("flint") ||
+                                dName.Contains("obsidian") || dName.Contains("copper") || dName.Contains("tin") ||
+                                dName.Contains("silver") || dName.Contains("iron") || dName.Contains("metal"))
+                                continue;
+
+                            // В Valheim камни и минералы имеют иммунитет к рубящему урону (chop)
+                            if (dest.m_damages.m_chop == HitData.DamageModifier.Immune || dest.m_damages.m_chop == HitData.DamageModifier.Ignore)
+                                continue;
+
+                            hitDestructibles.Add(dest);
+                            if (!resourcesConsumed)
+                            {
+                                resourcesConsumed = true;
+                                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                            }
+                            if (dest.m_nview != null && dest.m_nview.IsValid()) dest.m_nview.ClaimOwnership();
+
+                            // Наносим исключительно рубящий урон (m_chop) без m_damage, чтобы не повреждать минеральные объекты
+                            HitData hit = new HitData();
+                            hit.m_damage.m_chop = 999f;
+                            hit.m_point = col.bounds.center;
+                            hit.m_toolTier = 10;
+                            hit.SetAttacker(player);
+                            dest.Damage(hit);
+                            player.RaiseSkill(Skills.SkillType.WoodCutting, 1f);
                         }
-
-                        hitTrees.Add(tree);
-
-                        HitData hit = new HitData();
-                        hit.m_damage.m_chop = 999f;
-                        hit.m_point = col.bounds.center;
-                        hit.m_toolTier = 10;
-                        hit.SetAttacker(player);
-
-                        float hits = Mathf.Max(1f, tree.m_health / GetMinAxeChopDamage(tree.m_minToolTier));
-                        tree.Damage(hit);
-                        player.RaiseSkill(Skills.SkillType.WoodCutting, hits);
                     }
                 }
 
@@ -637,9 +786,9 @@ namespace RunescapeMagicValheim
             if (visualAxe != null)
                 UnityEngine.Object.Destroy(visualAxe);
 
-            if (hitTrees.Count == 0 && player != null)
+            if (hitTrees.Count == 0 && hitDestructibles.Count == 0 && player != null)
             {
-                player.Message(MessageHud.MessageType.Center, "Призрачный топор не поразил ни одного дерева!");
+                player.Message(MessageHud.MessageType.Center, axeMode == 1 ? "Призрачный топор не поразил деревьев или кустарников!" : "Призрачный топор не поразил ни одного дерева!");
             }
         }
 
@@ -878,17 +1027,106 @@ namespace RunescapeMagicValheim
                 return;
             }
 
+            int mode = SpellModeManager.GetCurrentMode(SpellType.Splinter);
             float radius = level >= 90f ? 25f : (level >= 35f ? 15f : 10f);
             float staminaCost = level >= 75f ? 15f : 25f;
-            float healthCost = level >= 55f ? 0f : 10f;
+            float healthCost = (mode == 1 || level >= 55f) ? 0f : 10f; // В точечном режиме расход здоровья полностью убирается
 
             if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RunescapeMagicPlugin.Instance.StartCoroutine(SplinterRoutine(player, impactPoint, radius, staminaCost, healthCost));
+                if (mode == 1)
+                {
+                    SplinterTargetedAtPoint(player, impactPoint, hitCol, staminaCost);
+                }
+                else
+                {
+                    RunescapeMagicPlugin.Instance.StartCoroutine(SplinterRoutine(player, impactPoint, radius, staminaCost, healthCost));
+                }
             });
+        }
+
+        private static void SplinterTargetedAtPoint(Player player, Vector3 impactPoint, Collider hitCol, float staminaCost)
+        {
+            TreeLog targetLog = hitCol != null ? hitCol.GetComponentInParent<TreeLog>() : null;
+            Destructible targetDest = hitCol != null ? hitCol.GetComponentInParent<Destructible>() : null;
+
+            // 1. Проверяем объект под прицелом (GetHoverObject)
+            if (targetLog == null && targetDest == null && player != null)
+            {
+                GameObject hover = player.GetHoverObject();
+                if (hover != null)
+                {
+                    targetLog = hover.GetComponentInParent<TreeLog>();
+                    targetDest = hover.GetComponentInParent<Destructible>();
+                }
+            }
+
+            // 2. Если прямого попадания нет, ищем в радиусе 2.8м от точки падения снаряда
+            if (targetLog == null && targetDest == null)
+            {
+                Collider[] nearCols = Physics.OverlapSphere(impactPoint, 2.8f);
+                foreach (Collider c in nearCols)
+                {
+                    if (c == null) continue;
+                    targetLog = c.GetComponentInParent<TreeLog>();
+                    if (targetLog != null) break;
+                    targetDest = c.GetComponentInParent<Destructible>();
+                    if (targetDest != null && c.GetComponentInParent<Character>() == null && c.GetComponentInParent<TreeBase>() == null) break;
+                }
+            }
+
+            if (targetLog != null)
+            {
+                if (!HasAxe(player, targetLog.m_minToolTier, out string axeFail))
+                {
+                    player.Message(MessageHud.MessageType.Center, axeFail);
+                    return;
+                }
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                RunescapeMagicPlugin.Instance.StartCoroutine(SplinterSingleLogRoutine(player, targetLog));
+            }
+            else if (targetDest != null && targetDest.GetComponentInParent<Character>() == null && targetDest.GetComponentInParent<TreeBase>() == null)
+            {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                if (targetDest.m_nview != null && targetDest.m_nview.IsValid()) targetDest.m_nview.ClaimOwnership();
+                HitData hit = new HitData();
+                hit.m_damage.m_chop = 999f;
+                hit.m_damage.m_damage = 999f;
+                hit.m_point = targetDest.transform.position;
+                hit.m_toolTier = 10;
+                hit.SetAttacker(player);
+                targetDest.Damage(hit);
+                player.RaiseSkill(Skills.SkillType.WoodCutting, 1f);
+                player.Message(MessageHud.MessageType.Center, "Пенёк точечно расщеплен!");
+            }
+            else
+            {
+                player.Message(MessageHud.MessageType.Center, "Прицельтесь в бревно или пенёк для точечного расщепления!");
+            }
+        }
+
+        private static IEnumerator SplinterSingleLogRoutine(Player player, TreeLog log)
+        {
+            if (log == null) yield break;
+            float hits = Mathf.Max(1f, log.m_health / GetMinAxeChopDamage(log.m_minToolTier));
+            HitData hit = new HitData();
+            hit.m_damage.m_chop = 999f;
+            hit.m_point = log.transform.position;
+            hit.m_toolTier = 10;
+            hit.SetAttacker(player);
+            log.Damage(hit);
+            player.RaiseSkill(Skills.SkillType.WoodCutting, hits);
+
+            yield return new WaitForSeconds(0.35f);
+
+            if (log != null)
+            {
+                log.Damage(hit);
+            }
+            player.Message(MessageHud.MessageType.Center, "Бревно точечно расщеплено!");
         }
 
         private static IEnumerator SplinterRoutine(Player player, Vector3 center, float radius, float staminaCost, float healthCost)
@@ -1008,16 +1246,131 @@ namespace RunescapeMagicValheim
             }
 
             float level = RunescapeMagicPlugin.GetEffectiveSkillLevel(player, Skills.SkillType.Pickaxes);
+            int mode = SpellModeManager.GetCurrentMode(SpellType.OreBlast);
             float radius = level >= 75f ? 6f : (level >= 35f ? 4f : 2f);
             float staminaCost = level >= 55f ? 10f : 25f;
+
+            if (mode == 1) // Компактный режим: уменьшенный вдвое радиус и расход
+            {
+                radius *= 0.5f;
+                staminaCost *= 0.5f;
+            }
+            else if (mode == 2) // Режим кирки: точечное разрушение (15 на старте, 5 на 55 ур.)
+            {
+                staminaCost = level >= 55f ? 5f : 15f;
+            }
 
             if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RunescapeMagicPlugin.Instance.StartCoroutine(OreBlastWaveRoutine(player, impactPoint, radius, level, hitCol, staminaCost));
+                if (mode == 2)
+                {
+                    OreBlastPrecisionAtPoint(player, impactPoint, hitCol, level, staminaCost);
+                }
+                else
+                {
+                    RunescapeMagicPlugin.Instance.StartCoroutine(OreBlastWaveRoutine(player, impactPoint, radius, level, hitCol, staminaCost));
+                }
             });
+        }
+
+        private static void OreBlastPrecisionAtPoint(Player player, Vector3 impactPoint, Collider hitCol, float skillLevel, float staminaCost)
+        {
+            if (hitCol == null)
+            {
+                player.Message(MessageHud.MessageType.Center, "Под прицелом нет руды или камня!");
+                return;
+            }
+
+            if (hitCol.GetComponentInParent<Character>() != null)
+            {
+                player.Message(MessageHud.MessageType.Center, "Под прицелом нет руды или камня!");
+                return;
+            }
+
+            IDestructible destructible = hitCol.GetComponentInParent<IDestructible>();
+            if (destructible == null)
+            {
+                player.Message(MessageHud.MessageType.Center, "Под прицелом нет руды или камня!");
+                return;
+            }
+
+            GameObject rootObj = ((MonoBehaviour)destructible).gameObject;
+            string prefabName = Utils.GetPrefabName(rootObj).ToLowerInvariant();
+
+            if (IsVegetation(destructible, rootObj, prefabName))
+            {
+                player.Message(MessageHud.MessageType.Center, "Под прицелом растительность, а не руда!");
+                return;
+            }
+
+            if (!CanMineOre(prefabName, skillLevel, player, destructible, out string blockedReason))
+            {
+                if (!string.IsNullOrEmpty(blockedReason))
+                    player.Message(MessageHud.MessageType.Center, blockedReason);
+                return;
+            }
+
+            if (destructible is MineRock5 mineRock5)
+            {
+                int areaIndex = mineRock5.GetAreaIndex(hitCol);
+                var area = areaIndex >= 0 ? mineRock5.GetHitArea(areaIndex) : null;
+                if (area != null && area.m_health > 0f)
+                {
+                    RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                    DamageText.instance?.ShowText(HitData.DamageModifier.Normal, hitCol.bounds.center, 9999f, false);
+                    area.m_health = 0f;
+                    if (mineRock5.m_nview != null && mineRock5.m_nview.IsValid())
+                    {
+                        mineRock5.m_nview.ClaimOwnership();
+                        mineRock5.SaveHealth();
+                        mineRock5.m_nview.InvokeRPC(ZNetView.Everybody, "RPC_SetAreaHealth", areaIndex, 0f);
+                    }
+                    hitCol.gameObject.SetActive(false);
+                    SpawnExplosionEffect(hitCol.bounds.center, 1.5f);
+                    float chunkHealth = mineRock5.m_health > 0f ? mineRock5.m_health : 50f;
+                    float xp = Mathf.Max(1f, chunkHealth / GetMinPickaxeDamage(mineRock5.m_minToolTier));
+                    player.RaiseSkill(Skills.SkillType.Pickaxes, xp);
+                    player.Message(MessageHud.MessageType.Center, "Секция жилы точечно добыта!");
+                    return;
+                }
+            }
+
+            if (destructible is Destructible dest)
+            {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                if (dest.m_nview != null && dest.m_nview.IsValid()) dest.m_nview.ClaimOwnership();
+                HitData hit = new HitData();
+                hit.m_damage.m_pickaxe = 999f;
+                hit.m_point = hitCol.bounds.center;
+                hit.m_toolTier = 10;
+                hit.SetAttacker(player);
+                dest.Damage(hit);
+                SpawnExplosionEffect(hitCol.bounds.center, 1.5f);
+                player.RaiseSkill(Skills.SkillType.Pickaxes, 2f);
+                player.Message(MessageHud.MessageType.Center, "Камень/жила точечно добыта!");
+                return;
+            }
+
+            if (destructible is MineRock mineRock)
+            {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                if (mineRock.m_nview != null && mineRock.m_nview.IsValid()) mineRock.m_nview.ClaimOwnership();
+                HitData hit = new HitData();
+                hit.m_damage.m_pickaxe = 999f;
+                hit.m_point = hitCol.bounds.center;
+                hit.m_toolTier = 10;
+                hit.SetAttacker(player);
+                mineRock.Damage(hit);
+                SpawnExplosionEffect(hitCol.bounds.center, 1.5f);
+                player.RaiseSkill(Skills.SkillType.Pickaxes, 2f);
+                player.Message(MessageHud.MessageType.Center, "Скала точечно добыта!");
+                return;
+            }
+
+            player.Message(MessageHud.MessageType.Center, "Под прицелом нет руды или камня!");
         }
 
         private static bool IsVegetation(IDestructible destructible, GameObject rootObj, string prefabName)
@@ -1421,6 +1774,7 @@ namespace RunescapeMagicValheim
         public static void CastAreaHarvest(Player player)
         {
             float level = RunescapeMagicPlugin.GetEffectiveSkillLevel(player, Skills.SkillType.Farming);
+            int mode = SpellModeManager.GetCurrentMode(SpellType.AreaHarvest);
             float radius = level >= 75f ? 15f : (level >= 20f ? 10f : 5f);
             float staminaCost = level >= 75f ? 5f : (level >= 35f ? 10f : 15f);
             bool autoPickup = level >= 50f;
@@ -1430,12 +1784,144 @@ namespace RunescapeMagicValheim
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                AreaHarvestAtPoint(player, impactPoint, radius, autoPickup, staminaCost);
+                AreaHarvestAtPoint(player, impactPoint, radius, autoPickup, staminaCost, mode, hitCol);
             });
         }
 
-        private static void AreaHarvestAtPoint(Player player, Vector3 center, float radius, bool autoPickup, float staminaCost)
+        private static void AreaHarvestAtPoint(Player player, Vector3 center, float radius, bool autoPickup, float staminaCost, int mode = 0, Collider hitCol = null)
         {
+            // Режим 1: Режим подбора (только лежащие на земле предметы, разблокируется на 50 ур.)
+            if (mode == 1)
+            {
+                int groundCount = 0;
+                if (ItemDrop.s_instances != null)
+                {
+                    foreach (ItemDrop idrop in ItemDrop.s_instances)
+                    {
+                        if (idrop == null || idrop.m_itemData == null || idrop.m_nview == null || !idrop.m_nview.IsValid())
+                            continue;
+                        if (IsFish(idrop))
+                            continue;
+                        if (Vector3.Distance(center, idrop.transform.position) <= (radius + 2f))
+                        {
+                            groundCount++;
+                        }
+                    }
+                }
+
+                if (groundCount > 0)
+                {
+                    RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                    player.RaiseSkill(Skills.SkillType.Farming, Mathf.Clamp(groundCount * 0.2f, 0.5f, 2.5f));
+                    player.Message(MessageHud.MessageType.Center, $"Сбор предметов с земли: {groundCount}");
+                    RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 3f));
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, "На земле нет предметов для сбора!");
+                }
+                return;
+            }
+
+            // Режим 2: Точечный / Селективный сбор
+            string filterPrefab = null;
+            string filterDropPrefab = null;
+            string filterItemSharedName = null;
+
+            if (mode == 2)
+            {
+                ItemDrop targetDrop = hitCol != null ? hitCol.GetComponentInParent<ItemDrop>() : null;
+                Pickable targetPickable = hitCol != null ? hitCol.GetComponentInParent<Pickable>() : null;
+                PickableItem targetPickItem = hitCol != null ? hitCol.GetComponentInParent<PickableItem>() : null;
+
+                if (targetDrop == null && targetPickable == null && targetPickItem == null && player != null)
+                {
+                    GameObject hover = player.GetHoverObject();
+                    if (hover != null)
+                    {
+                        targetDrop = hover.GetComponentInParent<ItemDrop>();
+                        targetPickable = hover.GetComponentInParent<Pickable>();
+                        targetPickItem = hover.GetComponentInParent<PickableItem>();
+                    }
+                }
+
+                if (targetDrop == null && targetPickable == null && targetPickItem == null)
+                {
+                    Collider[] near = Physics.OverlapSphere(center, 1.2f);
+                    foreach (var c in near)
+                    {
+                        if (c == null) continue;
+                        targetDrop = c.GetComponentInParent<ItemDrop>();
+                        if (targetDrop != null && !IsFish(targetDrop)) break;
+                        targetPickable = c.GetComponentInParent<Pickable>();
+                        if (targetPickable != null) break;
+                        targetPickItem = c.GetComponentInParent<PickableItem>();
+                        if (targetPickItem != null) break;
+                    }
+                }
+
+                // А) Если прицелились в уже лежащий на земле предмет (ItemDrop):
+                if (targetDrop != null && !IsFish(targetDrop))
+                {
+                    filterDropPrefab = Utils.GetPrefabName(targetDrop.gameObject);
+                    filterItemSharedName = targetDrop.m_itemData?.m_shared?.m_name;
+
+                    int matchedCount = 0;
+                    if (ItemDrop.s_instances != null)
+                    {
+                        foreach (ItemDrop idrop in ItemDrop.s_instances)
+                        {
+                            if (idrop == null || idrop.m_itemData == null || idrop.m_nview == null || !idrop.m_nview.IsValid()) continue;
+                            if (IsFish(idrop)) continue;
+                            if (Vector3.Distance(center, idrop.transform.position) <= (radius + 2f))
+                            {
+                                if (Utils.GetPrefabName(idrop.gameObject) == filterDropPrefab || (filterItemSharedName != null && idrop.m_itemData?.m_shared?.m_name == filterItemSharedName))
+                                {
+                                    matchedCount++;
+                                }
+                            }
+                        }
+                    }
+
+                    if (matchedCount > 0)
+                    {
+                        RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
+                        player.RaiseSkill(Skills.SkillType.Farming, Mathf.Clamp(matchedCount * 0.2f, 0.5f, 2.5f));
+                        string dispName = Localization.instance != null && filterItemSharedName != null ? Localization.instance.Localize(filterItemSharedName) : filterDropPrefab;
+                        player.Message(MessageHud.MessageType.Center, $"Точечный сбор с земли: {dispName} ({matchedCount})");
+                        RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 3f, filterDropPrefab, filterItemSharedName));
+                        return;
+                    }
+                    else
+                    {
+                        player.Message(MessageHud.MessageType.Center, "В радиусе больше нет таких предметов!");
+                        return;
+                    }
+                }
+                // Б) Если прицелились в растущую культуру (Pickable / PickableItem):
+                else if (targetPickable != null)
+                {
+                    filterPrefab = Utils.GetPrefabName(targetPickable.gameObject);
+                    if (targetPickable.m_itemPrefab != null)
+                    {
+                        filterDropPrefab = Utils.GetPrefabName(targetPickable.m_itemPrefab);
+                    }
+                }
+                else if (targetPickItem != null)
+                {
+                    filterPrefab = Utils.GetPrefabName(targetPickItem.gameObject);
+                    if (targetPickItem.m_itemPrefab != null)
+                    {
+                        filterDropPrefab = Utils.GetPrefabName(targetPickItem.m_itemPrefab.gameObject);
+                    }
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, "Прицельтесь в конкретное растение или предмет на земле для точечного сбора!");
+                    return;
+                }
+            }
+
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<Pickable> picked = new HashSet<Pickable>();
             HashSet<PickableItem> pickedItems = new HashSet<PickableItem>();
@@ -1450,6 +1936,9 @@ namespace RunescapeMagicValheim
                 Pickable pickable = col.GetComponentInParent<Pickable>();
                 if (pickable != null && col.GetComponentInParent<Fish>() == null && !picked.Contains(pickable) && pickable.CanBePicked())
                 {
+                    if (filterPrefab != null && Utils.GetPrefabName(pickable.gameObject) != filterPrefab)
+                        continue;
+
                     picked.Add(pickable);
                     pickable.Interact(player, false, false);
                     collectedCount++;
@@ -1459,6 +1948,9 @@ namespace RunescapeMagicValheim
                 PickableItem pickableItem = col.GetComponentInParent<PickableItem>();
                 if (pickableItem != null && col.GetComponentInParent<Fish>() == null && !pickedItems.Contains(pickableItem))
                 {
+                    if (filterPrefab != null && Utils.GetPrefabName(pickableItem.gameObject) != filterPrefab)
+                        continue;
+
                     pickedItems.Add(pickableItem);
                     pickableItem.Interact(player, false, false);
                     collectedCount++;
@@ -1493,7 +1985,7 @@ namespace RunescapeMagicValheim
 
             // 4. На 50+ уровне проверяем наличие лежащих на земле предметов (ItemDrop), исключая рыбу
             int groundItemsCount = 0;
-            if (autoPickup)
+            if (autoPickup && mode == 0)
             {
                 if (ItemDrop.s_instances != null)
                 {
@@ -1529,7 +2021,7 @@ namespace RunescapeMagicValheim
                 // На 50+ уровне переносим выпавший лут прямо в инвентарь игрока
                 if (autoPickup)
                 {
-                    RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 3f));
+                    RunescapeMagicPlugin.Instance.StartCoroutine(AutoPickupRoutine(player, center, radius + 3f, filterDropPrefab, filterItemSharedName));
                 }
             }
             else
@@ -1558,7 +2050,7 @@ namespace RunescapeMagicValheim
             return false;
         }
 
-        private static IEnumerator AutoPickupRoutine(Player player, Vector3 center, float radius)
+        private static IEnumerator AutoPickupRoutine(Player player, Vector3 center, float radius, string filterPrefab = null, string filterItemSharedName = null)
         {
             HashSet<ItemDrop> collectedDrops = new HashSet<ItemDrop>();
 
@@ -1581,6 +2073,18 @@ namespace RunescapeMagicValheim
 
                         if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
                             continue;
+
+                        // Если задан фильтр точечного сбора, подбираем только подходящие предметы
+                        if (!string.IsNullOrEmpty(filterPrefab) || !string.IsNullOrEmpty(filterItemSharedName))
+                        {
+                            bool match = false;
+                            if (!string.IsNullOrEmpty(filterPrefab) && Utils.GetPrefabName(itemDrop.gameObject) == filterPrefab)
+                                match = true;
+                            if (!string.IsNullOrEmpty(filterItemSharedName) && itemDrop.m_itemData != null && itemDrop.m_itemData.m_shared != null && itemDrop.m_itemData.m_shared.m_name == filterItemSharedName)
+                                match = true;
+
+                            if (!match) continue;
+                        }
 
                         ItemDrop.ItemData data = itemDrop.m_itemData;
                         if (player.GetInventory().CanAddItem(data, -1))
@@ -1608,6 +2112,18 @@ namespace RunescapeMagicValheim
 
                     if (itemDrop.m_itemData == null || itemDrop.m_nview == null || !itemDrop.m_nview.IsValid())
                         continue;
+
+                    // Если задан фильтр точечного сбора, подбираем только подходящие предметы
+                    if (!string.IsNullOrEmpty(filterPrefab) || !string.IsNullOrEmpty(filterItemSharedName))
+                    {
+                        bool match = false;
+                        if (!string.IsNullOrEmpty(filterPrefab) && Utils.GetPrefabName(itemDrop.gameObject) == filterPrefab)
+                            match = true;
+                        if (!string.IsNullOrEmpty(filterItemSharedName) && itemDrop.m_itemData != null && itemDrop.m_itemData.m_shared != null && itemDrop.m_itemData.m_shared.m_name == filterItemSharedName)
+                            match = true;
+
+                        if (!match) continue;
+                    }
 
                     ItemDrop.ItemData data = itemDrop.m_itemData;
                     if (player.GetInventory().CanAddItem(data, -1))
@@ -1638,21 +2154,67 @@ namespace RunescapeMagicValheim
                 return;
             }
 
+            int mode = SpellModeManager.GetCurrentMode(SpellType.InstantGrow);
             float radius = level >= 90f ? 15f : (level >= 50f ? 10f : 6f);
             float staminaCost = level >= 75f ? 15f : 30f;
             float healthCost = level >= 90f ? 0f : (level >= 75f ? 5f : 15f);
+
+            if (mode == 1) // Компактный режим: уменьшенный вдвое радиус и расход
+            {
+                radius *= 0.5f;
+                staminaCost *= 0.5f;
+                healthCost *= 0.5f;
+            }
+            else if (mode == 2) // Точечный рост: расход уменьшен вдвое
+            {
+                staminaCost *= 0.5f;
+                healthCost *= 0.5f;
+            }
 
             if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                InstantGrowAtPoint(player, impactPoint, radius, level, staminaCost, healthCost);
+                InstantGrowAtPoint(player, impactPoint, radius, level, staminaCost, healthCost, mode, hitCol);
             });
         }
 
-        private static void InstantGrowAtPoint(Player player, Vector3 center, float radius, float level, float staminaCost, float healthCost)
+        private static void InstantGrowAtPoint(Player player, Vector3 center, float radius, float level, float staminaCost, float healthCost, int mode = 0, Collider hitCol = null)
         {
+            string filterPrefab = null;
+            if (mode == 2)
+            {
+                Plant targetPlant = hitCol != null ? hitCol.GetComponentInParent<Plant>() : null;
+                Pickable targetPick = hitCol != null ? hitCol.GetComponentInParent<Pickable>() : null;
+                if (targetPlant == null && targetPick == null)
+                {
+                    Collider[] near = Physics.OverlapSphere(center, 0.8f);
+                    foreach (var c in near)
+                    {
+                        if (c == null) continue;
+                        targetPlant = c.GetComponentInParent<Plant>();
+                        if (targetPlant != null) break;
+                        targetPick = c.GetComponentInParent<Pickable>();
+                        if (targetPick != null) break;
+                    }
+                }
+
+                if (targetPlant != null)
+                {
+                    filterPrefab = Utils.GetPrefabName(targetPlant.gameObject);
+                }
+                else if (targetPick != null)
+                {
+                    filterPrefab = Utils.GetPrefabName(targetPick.gameObject);
+                }
+                else
+                {
+                    player.Message(MessageHud.MessageType.Center, "Прицельтесь в саженец или рассадник для точечного роста!");
+                    return;
+                }
+            }
+
             Collider[] colliders = Physics.OverlapSphere(center, radius);
             HashSet<GameObject> processedRoots = new HashSet<GameObject>();
             int grownCount = 0;
@@ -1669,6 +2231,9 @@ namespace RunescapeMagicValheim
                 if (plant != null && plant.m_nview != null && plant.m_nview.IsValid())
                 {
                     string prefabName = Utils.GetPrefabName(plant.gameObject).ToLowerInvariant();
+                    if (filterPrefab != null && Utils.GetPrefabName(plant.gameObject) != filterPrefab)
+                        continue;
+
                     if (CanGrowPlant(prefabName, level))
                     {
                         processedRoots.Add(root);
@@ -1689,6 +2254,9 @@ namespace RunescapeMagicValheim
                 Pickable pickable = col.GetComponentInParent<Pickable>();
                 if (pickable != null && pickable.m_nview != null && pickable.m_nview.IsValid())
                 {
+                    if (filterPrefab != null && Utils.GetPrefabName(pickable.gameObject) != filterPrefab)
+                        continue;
+
                     if (pickable.m_picked)
                     {
                         processedRoots.Add(root);
@@ -1848,6 +2416,7 @@ namespace RunescapeMagicValheim
                 return;
             }
 
+            int mode = SpellModeManager.GetCurrentMode(SpellType.InventoryRepair);
             float staminaCost = level >= 65f ? 15f : 30f;
             float healthCost = level >= 85f ? 0f : (level >= 65f ? 10f : 20f);
 
@@ -1866,6 +2435,12 @@ namespace RunescapeMagicValheim
 
             if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
+
+            if (mode == 1) // Режим прицела: сундуки, стойки брони, подставки предметов или союзники
+            {
+                CastTargetedInventoryRepair(player, staminaCost, healthCost, repairRatio);
+                return;
+            }
 
             List<ItemDrop.ItemData> damagedItems = new List<ItemDrop.ItemData>();
             foreach (ItemDrop.ItemData item in player.GetInventory().GetAllItems())
@@ -1897,6 +2472,118 @@ namespace RunescapeMagicValheim
             player.Message(MessageHud.MessageType.Center, $"Починено предметов: {damagedItems.Count} (+{(int)(repairRatio * 100)}% прочности)");
         }
 
+        private static void CastTargetedInventoryRepair(Player player, float staminaCost, float healthCost, float repairRatio)
+        {
+            LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
+            {
+                GameObject hoverObj = player.GetHoverObject();
+
+                // 1. Другой игрок (Player)
+                Player targetPlayer = hitCol != null ? hitCol.GetComponentInParent<Player>() : null;
+                if ((targetPlayer == null || targetPlayer == player) && hoverObj != null)
+                {
+                    Player hp = hoverObj.GetComponentInParent<Player>();
+                    if (hp != null && hp != player) targetPlayer = hp;
+                }
+
+                // 2. Контейнер / Сундук (Container)
+                Container container = hitCol != null ? hitCol.GetComponentInParent<Container>() : null;
+                if (container == null && hoverObj != null) container = hoverObj.GetComponentInParent<Container>();
+
+                // 3. Стойка для брони (ArmorStand)
+                ArmorStand armorStand = hitCol != null ? hitCol.GetComponentInParent<ArmorStand>() : null;
+                if (armorStand == null && hoverObj != null) armorStand = hoverObj.GetComponentInParent<ArmorStand>();
+
+                // 4. Подставка для предметов (ItemStand)
+                ItemStand itemStand = hitCol != null ? hitCol.GetComponentInParent<ItemStand>() : null;
+                if (itemStand == null && hoverObj != null) itemStand = hoverObj.GetComponentInParent<ItemStand>();
+
+                // 5. Если прямого попадания нет, проверяем в радиусе 2.5м от точки попадания снаряда
+                if (targetPlayer == null && container == null && armorStand == null && itemStand == null)
+                {
+                    Collider[] near = Physics.OverlapSphere(impactPoint, 2.5f);
+                    foreach (Collider c in near)
+                    {
+                        if (c == null) continue;
+                        if (targetPlayer == null)
+                        {
+                            Player p = c.GetComponentInParent<Player>();
+                            if (p != null && p != player) targetPlayer = p;
+                        }
+                        if (container == null) container = c.GetComponentInParent<Container>();
+                        if (armorStand == null) armorStand = c.GetComponentInParent<ArmorStand>();
+                        if (itemStand == null) itemStand = c.GetComponentInParent<ItemStand>();
+                    }
+                }
+
+                // Выполняем починку найденной цели
+                if (targetPlayer != null && targetPlayer != player)
+                {
+                    if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost)) return;
+                    ZRoutedRpc.instance?.InvokeRoutedRPC(targetPlayer.GetZDOID().UserID, "RPC_RunescapeRepairInventory", player.GetPlayerName(), repairRatio);
+                    PlayRepairSound(targetPlayer.transform.position);
+                    player.RaiseSkill(Skills.SkillType.Crafting, 2.5f);
+                    player.Message(MessageHud.MessageType.Center, $"Снаряжение игрока {targetPlayer.GetPlayerName()} отремонтировано!");
+                    return;
+                }
+
+                if (container != null && container.GetInventory() != null)
+                {
+                    if (container.m_nview != null && container.m_nview.IsValid()) container.m_nview.ClaimOwnership();
+                    int repaired = 0;
+                    foreach (var item in container.GetInventory().GetAllItems())
+                    {
+                        if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
+                        {
+                            float maxDur = item.GetMaxDurability();
+                            item.m_durability = Mathf.Min(maxDur, item.m_durability + maxDur * repairRatio);
+                            repaired++;
+                        }
+                    }
+                    if (repaired > 0)
+                    {
+                        if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost)) return;
+                        container.Save();
+                        PlayRepairSound(container.transform.position);
+                        player.RaiseSkill(Skills.SkillType.Crafting, repaired * 0.5f);
+                        player.Message(MessageHud.MessageType.Center, $"Отремонтировано предметов в сундуке: {repaired}");
+                        return;
+                    }
+                    else
+                    {
+                        player.Message(MessageHud.MessageType.Center, "В сундуке нет поврежденных предметов!");
+                        return;
+                    }
+                }
+
+                if (armorStand != null && armorStand.m_nview != null && armorStand.m_nview.IsValid())
+                {
+                    armorStand.m_nview.ClaimOwnership();
+                    PlayRepairSound(armorStand.transform.position);
+                    if (RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+                    {
+                        player.RaiseSkill(Skills.SkillType.Crafting, 1.5f);
+                        player.Message(MessageHud.MessageType.Center, "Снаряжение на стойке отремонтировано!");
+                    }
+                    return;
+                }
+
+                if (itemStand != null && itemStand.m_nview != null && itemStand.m_nview.IsValid())
+                {
+                    itemStand.m_nview.ClaimOwnership();
+                    PlayRepairSound(itemStand.transform.position);
+                    if (RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+                    {
+                        player.RaiseSkill(Skills.SkillType.Crafting, 1f);
+                        player.Message(MessageHud.MessageType.Center, "Предмет на подставке отремонтирован!");
+                    }
+                    return;
+                }
+
+                player.Message(MessageHud.MessageType.Center, "Прицельтесь в сундук, стойку с броней или союзника!");
+            });
+        }
+
         private static bool CanRepairItem(ItemDrop.ItemData item, float level)
         {
             if (item?.m_shared == null) return false;
@@ -1909,17 +2596,82 @@ namespace RunescapeMagicValheim
         public static void CastPieceRepair(Player player)
         {
             float level = RunescapeMagicPlugin.GetEffectiveSkillLevel(player, Skills.SkillType.Crafting);
+            int mode = SpellModeManager.GetCurrentMode(SpellType.PieceRepair);
             float radius = level >= 80f ? 25f : (level >= 25f ? 15f : 10f);
             float staminaCost = level >= 60f ? 10f : 25f;
+            float healthCost = (mode == 1) ? 10f : 0f; // В режиме укрепления расходует 10 HP
             bool ignoreStation = level >= 40f;
 
-            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, 0f))
+            if (!RunescapeMagicPlugin.HasResources(player, staminaCost, healthCost))
                 return;
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                RepairPiecesAtPoint(player, impactPoint, radius, ignoreStation, staminaCost);
+                if (mode == 1)
+                {
+                    OverhealPiecesAtPoint(player, impactPoint, radius, staminaCost, healthCost);
+                }
+                else
+                {
+                    RepairPiecesAtPoint(player, impactPoint, radius, ignoreStation, staminaCost);
+                }
             });
+        }
+
+        private static void OverhealPiecesAtPoint(Player player, Vector3 center, float radius, float staminaCost, float healthCost)
+        {
+            Collider[] colliders = Physics.OverlapSphere(center, radius);
+            HashSet<WearNTear> visited = new HashSet<WearNTear>();
+            int fortifiedCount = 0;
+
+            foreach (Collider col in colliders)
+            {
+                if (col == null) continue;
+                WearNTear wnt = col.GetComponentInParent<WearNTear>();
+                if (wnt != null && !visited.Contains(wnt) && wnt.m_nview != null && wnt.m_nview.IsValid())
+                {
+                    visited.Add(wnt);
+                    float maxHealth = wnt.m_health;
+                    float fortifiedHealth = maxHealth * 1.5f;
+                    float curHealth = wnt.m_nview.GetZDO().GetFloat(ZDOVars.s_health, maxHealth);
+
+                    if (curHealth < (fortifiedHealth - 0.5f))
+                    {
+                        // 1. Полностью восстанавливаем постройку, сбрасывая текстурный износ и повреждения
+                        if (wnt.GetHealthPercentage() < 1f)
+                        {
+                            wnt.Repair();
+                        }
+
+                        // 2. Устанавливаем прочность на 150% (щит укрепления) и синхронизируем по сети
+                        wnt.m_nview.ClaimOwnership();
+                        wnt.m_nview.GetZDO().Set(ZDOVars.s_health, fortifiedHealth);
+                        wnt.m_nview.InvokeRPC(ZNetView.Everybody, "RPC_HealthChanged", fortifiedHealth);
+
+                        // 3. Создаем визуальный эффект ремонта
+                        if (wnt.m_piece != null && wnt.m_piece.m_placeEffect != null)
+                        {
+                            wnt.m_piece.m_placeEffect.Create(wnt.transform.position, wnt.transform.rotation, wnt.transform, 1f, -1);
+                        }
+
+                        fortifiedCount++;
+                    }
+                }
+            }
+
+            if (fortifiedCount > 0)
+            {
+                if (!RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost))
+                    return;
+
+                PlayRepairSound(center);
+                player.RaiseSkill(Skills.SkillType.Crafting, fortifiedCount * 0.4f);
+                player.Message(MessageHud.MessageType.Center, $"Укреплено построек: {fortifiedCount} (Прочность: 150%)");
+            }
+            else
+            {
+                player.Message(MessageHud.MessageType.Center, "Все постройки в радиусе уже укреплены до максимума!");
+            }
         }
 
         private static void RepairPiecesAtPoint(Player player, Vector3 center, float radius, bool ignoreStation, float staminaCost)
@@ -2002,9 +2754,16 @@ namespace RunescapeMagicValheim
                 return;
             }
 
+            int mode = SpellModeManager.GetCurrentMode(SpellType.Overdrive);
             float staminaCost = level >= 75f ? 20f : 40f;
             float healthCost = level >= 90f ? 0f : (level >= 75f ? 10f : 25f);
             float radius = level >= 60f ? 15f : 10f;
+
+            if (mode == 1) // Точечный разгон: расход ресурсов уменьшен вдвое
+            {
+                staminaCost *= 0.5f;
+                healthCost *= 0.5f;
+            }
 
             int maxItemsPerStation = 3;
             if (level >= 90f) maxItemsPerStation = 9999;
@@ -2016,8 +2775,132 @@ namespace RunescapeMagicValheim
 
             LaunchMagicProjectile(player, 35f, (impactPoint, hitCol) =>
             {
-                OverdriveAtPoint(player, impactPoint, radius, maxItemsPerStation, staminaCost, healthCost);
+                if (mode == 1)
+                {
+                    OverdriveTargetedAtPoint(player, impactPoint, hitCol, maxItemsPerStation, staminaCost, healthCost);
+                }
+                else
+                {
+                    OverdriveAtPoint(player, impactPoint, radius, maxItemsPerStation, staminaCost, healthCost);
+                }
             });
+        }
+
+        private static void OverdriveTargetedAtPoint(Player player, Vector3 impactPoint, Collider hitCol, int maxItemsPerStation, float staminaCost, float healthCost)
+        {
+            Smelter smelter = hitCol != null ? hitCol.GetComponentInParent<Smelter>() : null;
+            Fermenter fermenter = hitCol != null ? hitCol.GetComponentInParent<Fermenter>() : null;
+            GameObject modRoot = hitCol != null ? hitCol.transform.root.gameObject : null;
+
+            if (smelter == null && fermenter == null)
+            {
+                Collider[] near = Physics.OverlapSphere(impactPoint, 1.5f);
+                foreach (var c in near)
+                {
+                    if (c == null) continue;
+                    smelter = c.GetComponentInParent<Smelter>();
+                    if (smelter != null) break;
+                    fermenter = c.GetComponentInParent<Fermenter>();
+                    if (fermenter != null) break;
+                    if (modRoot == null) modRoot = c.transform.root.gameObject;
+                }
+            }
+
+            int processed = 0;
+            if (smelter != null && smelter.m_nview != null && smelter.m_nview.IsValid())
+            {
+                smelter.m_nview.ClaimOwnership();
+                int queueSize = smelter.GetQueueSize();
+                if (queueSize > 0)
+                {
+                    bool requiresFuel = smelter.m_maxFuel > 0;
+                    int fuelPerProduct = smelter.m_fuelPerProduct > 0 ? smelter.m_fuelPerProduct : 1;
+                    float currentFuel = smelter.GetFuel();
+                    int maxAffordable = requiresFuel ? (int)(currentFuel / fuelPerProduct) : int.MaxValue;
+                    int toProcess = Mathf.Min(queueSize, Mathf.Min(maxItemsPerStation, maxAffordable));
+                    for (int i = 0; i < toProcess; i++)
+                    {
+                        string ore = smelter.GetQueuedOre();
+                        if (!string.IsNullOrEmpty(ore))
+                        {
+                            smelter.RemoveOneOre();
+                            smelter.QueueProcessed(ore);
+                            if (requiresFuel) currentFuel -= fuelPerProduct;
+                            processed++;
+                        }
+                    }
+                    if (requiresFuel) smelter.SetFuel(Mathf.Max(0f, currentFuel));
+                }
+            }
+            else if (fermenter != null && fermenter.m_nview != null && fermenter.m_nview.IsValid())
+            {
+                if (fermenter.GetStatus() == Fermenter.Status.Fermenting)
+                {
+                    fermenter.m_nview.ClaimOwnership();
+                    long netTicks = ZNet.instance.GetTime().Ticks;
+                    long reqTicks = (long)((fermenter.m_fermentationDuration + 10f) * 10000000.0);
+                    long safeStartTime = netTicks > reqTicks ? (netTicks - reqTicks) : 1L;
+                    fermenter.m_nview.GetZDO().Set(ZDOVars.s_startTime, safeStartTime);
+                    if (netTicks <= reqTicks)
+                    {
+                        fermenter.m_fermentationDuration = 0f;
+                    }
+                    processed++;
+                }
+            }
+            else if (modRoot != null)
+            {
+                MonoBehaviour[] scripts = modRoot.GetComponentsInChildren<MonoBehaviour>();
+                foreach (MonoBehaviour mb in scripts)
+                {
+                    if (mb != null && mb.GetType().Name == "FishPress")
+                    {
+                        ZNetView nv = mb.GetComponent<ZNetView>() ?? modRoot.GetComponent<ZNetView>();
+                        if (nv != null && nv.IsValid()) nv.ClaimOwnership();
+                        MethodInfo isProc = mb.GetType().GetMethod("IsProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo finishProc = mb.GetType().GetMethod("FinishProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo startProc = mb.GetType().GetMethod("StartProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo getQueue = mb.GetType().GetMethod("GetQueueSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo updateVisuals = mb.GetType().GetMethod("UpdateStateVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                        FieldInfo reqField = mb.GetType().GetField("m_fishRequired", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        int fishReq = reqField != null ? (int)reqField.GetValue(mb) : 1;
+                        if (fishReq <= 0) fishReq = 1;
+
+                        bool currentlyProcessing = isProc != null && (bool)isProc.Invoke(mb, null);
+                        if (currentlyProcessing)
+                        {
+                            finishProc?.Invoke(mb, null);
+                            processed++;
+                        }
+
+                        int stationProcessed = 0;
+                        while (stationProcessed < maxItemsPerStation && getQueue != null)
+                        {
+                            int queue = (int)getQueue.Invoke(mb, null);
+                            if (queue < fishReq) break;
+                            startProc?.Invoke(mb, null);
+                            finishProc?.Invoke(mb, null);
+                            stationProcessed++;
+                            processed++;
+                        }
+                        updateVisuals?.Invoke(mb, null);
+                        break;
+                    }
+                }
+            }
+
+            if (processed > 0)
+            {
+                RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, healthCost);
+                PlayRepairSound(impactPoint);
+                player.RaiseSkill(Skills.SkillType.Crafting, processed * 1.5f);
+                player.Message(MessageHud.MessageType.Center, $"Точечный разгон станции завершен! (Переработано: {processed})");
+            }
+            else
+            {
+                player.Message(MessageHud.MessageType.Center, "Под прицелом нет работающей или загруженной сырьем станции!");
+            }
         }
 
         private static void OverdriveAtPoint(Player player, Vector3 center, float radius, int maxItemsPerStation, float staminaCost, float healthCost)

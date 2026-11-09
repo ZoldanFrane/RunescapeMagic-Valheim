@@ -4,10 +4,13 @@
     <TargetFramework>net48</TargetFramework>
     <AssemblyName>RunescapeMagicValheim</AssemblyName>
     <Description>Магия Runescape в Valheim</Description>
-    <Version>1.0.6</Version>
+    <Version>1.1.0</Version>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    
+    <!-- Защита от автокопирования в текущий профиль: по умолчанию выключено -->
+    <DisableAutoCopy Condition="'$(DisableAutoCopy)' == ''">true</DisableAutoCopy>
     
     <!-- Пути к установленной игре и профилю Thunderstore -->
     <ValheimDir>D:\Steam\steamapps\common\Valheim</ValheimDir>
@@ -71,6 +74,10 @@
       <HintPath>$(ManagedDir)\UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>$(ManagedDir)\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
       <HintPath>$(ManagedDir)\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
@@ -81,8 +88,8 @@
     </Reference>
   </ItemGroup>
 
-  <!-- Автоматическое копирование собранной DLL сразу в папку плагинов профиля Thunderstore -->
-  <Target Name="CopyToPlugins" AfterTargets="Build">
+  <!-- Автоматическое копирование собранной DLL сразу в папку плагинов профиля Thunderstore (только если DisableAutoCopy != true) -->
+  <Target Name="CopyToPlugins" AfterTargets="Build" Condition="'$(DisableAutoCopy)' != 'true'">
     <PropertyGroup>
       <TargetPluginFolder Condition="Exists('$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\')">$(BepInExProfileDir)\plugins\ZoldanTeam-RunescapeMagic\</TargetPluginFolder>
       <TargetPluginFolder Condition="'$(TargetPluginFolder)' == ''">$(BepInExProfileDir)\plugins\RunescapeMagic\</TargetPluginFolder>
