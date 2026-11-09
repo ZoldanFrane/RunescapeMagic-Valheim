@@ -262,13 +262,13 @@ Each spell features specialized operational modes designed for precise Viking ut
 
 ### Manual / Вручную:
 1. Install [BepInExPack Valheim](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/).
-2. Download the release archive `RunescapeMagic-1.1.0.zip`.
+2. Download the release archive `RunescapeMagic-1.1.1.zip`.
 3. Extract the contents into `Valheim/BepInEx/plugins/RunescapeMagic/` ensuring `RunescapeMagicValheim.dll` and the `UI/` folder are placed inside.
 
 ---
 
 1. Установите [BepInExPack Valheim](https://valheim.thunderstore.io/package/denikson/BepInExPack_Valheim/).
-2. Скачайте архив мода `RunescapeMagic-1.1.0.zip`.
+2. Скачайте архив мода `RunescapeMagic-1.1.1.zip`.
 3. Распакуйте архив в папку `Valheim/BepInEx/plugins/RunescapeMagic/` так, чтобы `RunescapeMagicValheim.dll` и папка `UI/` находились внутри нее.
 
 ---
@@ -290,6 +290,10 @@ Each spell features specialized operational modes designed for precise Viking ut
 ---
 
 ## Version History / История изменений
+
+### v1.1.1
+- **Targeted Splinter Fix:** Strictly restricted Targeted Splinter to fallen tree logs (`TreeLog`) and tree stumps (`Destructible` stubs). Prohibited accidental destruction of rocks, mineral veins, bushes, shrubs, and standing trees.
+- **Tool Tier Check:** Added axe tool tier check for chopping stumps in Targeted Splinter mode.
 
 ### v1.1.0 (Spell Modes Update)
 - **New Feature: Spell Modes System (Режимы заклинаний):**
