@@ -2857,121 +2857,15 @@ namespace RunescapeMagicValheim
             });
         }
 
-        private static Component FindFishPressComponent(GameObject obj)
-        {
-            if (obj == null) return null;
-
-            // 1. Прямая проверка на объекте и его родителях
-            Component comp = obj.GetComponentInParent<Component>();
-            Component[] allComps = obj.GetComponentsInChildren<Component>(true);
-            foreach (Component c in allComps)
-            {
-                if (c != null && c.GetType().Name == "FishPress")
-                    return c;
-            }
-
-            // 2. Проверка в корневом объекте и всей иерархии префаба
-            Transform root = obj.transform.root;
-            if (root != null)
-            {
-                Component[] rootComps = root.GetComponentsInChildren<Component>(true);
-                foreach (Component c in rootComps)
-                {
-                    if (c != null && c.GetType().Name == "FishPress")
-                        return c;
-                }
-            }
-
-            return null;
-        }
-
-        private static int ProcessFishPressStation(Component mb, int maxItems)
-        {
-            if (mb == null) return 0;
-            try
-            {
-                // Захватываем сетевое владение ZNetView
-                FieldInfo nvField = mb.GetType().GetField("m_nview", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                ZNetView nv = (nvField != null ? nvField.GetValue(mb) as ZNetView : null) ?? mb.GetComponent<ZNetView>() ?? mb.GetComponentInParent<ZNetView>();
-                if (nv != null && nv.IsValid())
-                {
-                    nv.ClaimOwnership();
-                }
-
-                MethodInfo isProc = mb.GetType().GetMethod("IsProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                MethodInfo finishProc = mb.GetType().GetMethod("FinishProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                MethodInfo startProc = mb.GetType().GetMethod("StartProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                MethodInfo getQueue = mb.GetType().GetMethod("GetQueueSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                MethodInfo updateVisuals = mb.GetType().GetMethod("UpdateStateVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-
-                FieldInfo reqField = mb.GetType().GetField("m_fishRequired", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
-                int fishReq = reqField != null ? (int)reqField.GetValue(mb) : 1;
-                if (fishReq <= 0) fishReq = 1;
-
-                int processed = 0;
-
-                // 1. Завершаем текущий процесс прессования рыбы (если идет прямо сейчас)
-                bool currentlyProcessing = isProc != null && (bool)isProc.Invoke(mb, null);
-                if (currentlyProcessing && finishProc != null)
-                {
-                    finishProc.Invoke(mb, null);
-                    processed++;
-                }
-
-                // 2. Перерабатываем рыбу из очереди до лимита овердрайва (maxItems)
-                while (processed < maxItems && getQueue != null && startProc != null && finishProc != null)
-                {
-                    int queue = (int)getQueue.Invoke(mb, null);
-                    if (queue < fishReq) break;
-
-                    startProc.Invoke(mb, null);
-                    finishProc.Invoke(mb, null);
-                    processed++;
-                }
-
-                // 3. Если после овердрайва в очереди осталась рыба, запускаем следующий обычный цикл
-                if (getQueue != null && startProc != null && isProc != null)
-                {
-                    int queue = (int)getQueue.Invoke(mb, null);
-                    bool isP = (bool)isProc.Invoke(mb, null);
-                    if (queue >= fishReq && !isP)
-                    {
-                        startProc.Invoke(mb, null);
-                    }
-                }
-
-                updateVisuals?.Invoke(mb, null);
-                return processed;
-            }
-            catch (Exception ex)
-            {
-                RunescapeMagicPlugin.Log?.LogWarning($"[RunescapeMagic] Ошибка овердрайва FishPress: {ex.Message}");
-                return 0;
-            }
-        }
-
         private static void OverdriveTargetedAtPoint(Player player, Vector3 impactPoint, Collider hitCol, int maxItemsPerStation, float staminaCost, float healthCost)
         {
             Smelter smelter = hitCol != null ? hitCol.GetComponentInParent<Smelter>() : null;
             Fermenter fermenter = hitCol != null ? hitCol.GetComponentInParent<Fermenter>() : null;
-            Component fishPress = hitCol != null ? FindFishPressComponent(hitCol.gameObject) : null;
+            GameObject modRoot = hitCol != null ? hitCol.transform.root.gameObject : null;
 
-            // 1. Проверяем объект под прицелом (GetHoverObject)
-            if (smelter == null && fermenter == null && fishPress == null && player != null)
+            if (smelter == null && fermenter == null)
             {
-                GameObject hover = player.GetHoverObject();
-                if (hover != null)
-                {
-                    smelter = hover.GetComponentInParent<Smelter>();
-                    fermenter = hover.GetComponentInParent<Fermenter>();
-                    fishPress = FindFishPressComponent(hover);
-                }
-            }
-
-            // 2. Если прямого попадания нет, ищем в небольшом радиусе (2.5м) от точки попадания снаряда
-            if (smelter == null && fermenter == null && fishPress == null)
-            {
-                Collider[] near = Physics.OverlapSphere(impactPoint, 2.5f);
+                Collider[] near = Physics.OverlapSphere(impactPoint, 1.5f);
                 foreach (var c in near)
                 {
                     if (c == null) continue;
@@ -2979,8 +2873,7 @@ namespace RunescapeMagicValheim
                     if (smelter != null) break;
                     fermenter = c.GetComponentInParent<Fermenter>();
                     if (fermenter != null) break;
-                    fishPress = FindFishPressComponent(c.gameObject);
-                    if (fishPress != null) break;
+                    if (modRoot == null) modRoot = c.transform.root.gameObject;
                 }
             }
 
@@ -3026,9 +2919,46 @@ namespace RunescapeMagicValheim
                     processed++;
                 }
             }
-            else if (fishPress != null)
+            else if (modRoot != null)
             {
-                processed += ProcessFishPressStation(fishPress, maxItemsPerStation);
+                MonoBehaviour[] scripts = modRoot.GetComponentsInChildren<MonoBehaviour>();
+                foreach (MonoBehaviour mb in scripts)
+                {
+                    if (mb != null && mb.GetType().Name == "FishPress")
+                    {
+                        ZNetView nv = mb.GetComponent<ZNetView>() ?? modRoot.GetComponent<ZNetView>();
+                        if (nv != null && nv.IsValid()) nv.ClaimOwnership();
+                        MethodInfo isProc = mb.GetType().GetMethod("IsProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo finishProc = mb.GetType().GetMethod("FinishProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo startProc = mb.GetType().GetMethod("StartProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo getQueue = mb.GetType().GetMethod("GetQueueSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        MethodInfo updateVisuals = mb.GetType().GetMethod("UpdateStateVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                        FieldInfo reqField = mb.GetType().GetField("m_fishRequired", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                        int fishReq = reqField != null ? (int)reqField.GetValue(mb) : 1;
+                        if (fishReq <= 0) fishReq = 1;
+
+                        bool currentlyProcessing = isProc != null && (bool)isProc.Invoke(mb, null);
+                        if (currentlyProcessing)
+                        {
+                            finishProc?.Invoke(mb, null);
+                            processed++;
+                        }
+
+                        int stationProcessed = 0;
+                        while (stationProcessed < maxItemsPerStation && getQueue != null)
+                        {
+                            int queue = (int)getQueue.Invoke(mb, null);
+                            if (queue < fishReq) break;
+                            startProc?.Invoke(mb, null);
+                            finishProc?.Invoke(mb, null);
+                            stationProcessed++;
+                            processed++;
+                        }
+                        updateVisuals?.Invoke(mb, null);
+                        break;
+                    }
+                }
             }
 
             if (processed > 0)
@@ -3050,7 +2980,7 @@ namespace RunescapeMagicValheim
 
             HashSet<Smelter> smelters = new HashSet<Smelter>();
             HashSet<Fermenter> fermenters = new HashSet<Fermenter>();
-            HashSet<Component> processedFishPresses = new HashSet<Component>();
+            HashSet<GameObject> processedModStations = new HashSet<GameObject>();
             int processedTotal = 0;
             bool lackedFuel = false;
 
@@ -3131,12 +3061,70 @@ namespace RunescapeMagicValheim
                 }
 
                 // 3. Модовые ремесленные станции (OdinShip: FishPress)
-                Component fishPress = FindFishPressComponent(col.gameObject);
-                if (fishPress != null && !processedFishPresses.Contains(fishPress))
+                GameObject root = col.transform.root.gameObject;
+                if (!processedModStations.Contains(root))
                 {
-                    processedFishPresses.Add(fishPress);
-                    int pressCount = ProcessFishPressStation(fishPress, maxItemsPerStation);
-                    processedTotal += pressCount;
+                    MonoBehaviour[] scripts = root.GetComponentsInChildren<MonoBehaviour>();
+                    foreach (MonoBehaviour mb in scripts)
+                    {
+                        if (mb == null) continue;
+                        if (mb.GetType().Name == "FishPress")
+                        {
+                            processedModStations.Add(root);
+                            ZNetView nv = mb.GetComponent<ZNetView>() ?? root.GetComponent<ZNetView>();
+                            if (nv != null && nv.IsValid())
+                            {
+                                nv.ClaimOwnership();
+                            }
+
+                            MethodInfo isProc = mb.GetType().GetMethod("IsProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo finishProc = mb.GetType().GetMethod("FinishProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo startProc = mb.GetType().GetMethod("StartProcessing", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo getQueue = mb.GetType().GetMethod("GetQueueSize", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            MethodInfo updateVisuals = mb.GetType().GetMethod("UpdateStateVisuals", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+                            FieldInfo reqField = mb.GetType().GetField("m_fishRequired", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            int fishReq = reqField != null ? (int)reqField.GetValue(mb) : 1;
+                            if (fishReq <= 0) fishReq = 1;
+
+                            int stationProcessed = 0;
+
+                            // 1. Завершаем текущий процесс прессования рыбы (если идет прямо сейчас)
+                            bool currentlyProcessing = isProc != null && (bool)isProc.Invoke(mb, null);
+                            if (currentlyProcessing)
+                            {
+                                finishProc?.Invoke(mb, null);
+                                stationProcessed++;
+                                processedTotal++;
+                            }
+
+                            // 2. Перерабатываем рыбу из очереди до лимита овердрайва (maxItemsPerStation)
+                            while (stationProcessed < maxItemsPerStation && getQueue != null)
+                            {
+                                int queue = (int)getQueue.Invoke(mb, null);
+                                if (queue < fishReq) break;
+
+                                startProc?.Invoke(mb, null);
+                                finishProc?.Invoke(mb, null);
+                                stationProcessed++;
+                                processedTotal++;
+                            }
+
+                            // 3. Если после овердрайва в очереди осталась рыба, запускаем следующий обычный цикл
+                            if (getQueue != null && startProc != null && isProc != null)
+                            {
+                                int queue = (int)getQueue.Invoke(mb, null);
+                                bool isP = (bool)isProc.Invoke(mb, null);
+                                if (queue >= fishReq && !isP)
+                                {
+                                    startProc.Invoke(mb, null);
+                                }
+                            }
+
+                            updateVisuals?.Invoke(mb, null);
+                            break;
+                        }
+                    }
                 }
             }
 
