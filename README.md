@@ -291,6 +291,14 @@ Each spell features specialized operational modes designed for precise Viking ut
 
 ## Version History / История изменений
 
+### v1.1.2
+- **Area Harvest (Targeted Crop Mode / Точечный сбор):**
+  - **EN:** Fixed an issue where modded SeedBeds (`blacks7ar-SeedBed`) were harvested regardless of planted crop type in Mode 2 (Selective/Targeted Harvest). SeedBeds now inspect their planted seed/crop and only harvest if they match the targeted crop. Aiming directly at SeedBeds in Mode 2 is also fully supported. (Fixes #3)
+  - **RU:** Исправлена ошибка, из-за которой в Режиме 2 (точечный/селективный сбор) собирались модовые рассадницы SeedBed независимо от того, что на них растет. Теперь рассадницы проверяют посаженную культуру и собираются только при совпадении с выбранной. Также добавлена возможность целиться непосредственно в рассадницу. (Исправляет #3)
+- **Spectral Axe (Brushcutter Mode / Кусторез):**
+  - **EN:** Fixed shrubs, bushes, undergrowth, and young beech trees (`Beech_small1`, `Beech_small2`) not being damaged. Removed premature local `ClaimOwnership` calls that disrupted Valheim's network damage RPC routing, added both chop and slash damage, and properly set hit direction. Rocks and mature trees remain completely protected. (Fixes #4)
+  - **RU:** Исправлена ошибка, из-за которой кусторез не срезал кусты и молодой бук (`Beech_small1`, `Beech_small2`). Убран преждевременный локальный вызов `ClaimOwnership`, нарушавший доставку сетевого RPC-урона в Valheim, добавлен режущий и рубящий урон, а также вектор направления удара. Камни и взрослые деревья по-прежнему надежно защищены. (Исправляет #4)
+
 ### v1.1.1
 - **Targeted Splinter Fix:** Strictly restricted Targeted Splinter to fallen tree logs (`TreeLog`) and tree stumps (`Destructible` stubs). Prohibited accidental destruction of rocks, mineral veins, bushes, shrubs, and standing trees.
 - **Tool Tier Check:** Added axe tool tier check for chopping stumps in Targeted Splinter mode.

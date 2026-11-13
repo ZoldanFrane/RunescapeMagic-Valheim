@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.1.1";
+        public const string PluginVersion = "1.1.2";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -729,7 +729,9 @@ namespace RunescapeMagicValheim
 
                                 HitData hit = new HitData();
                                 hit.m_damage.m_chop = 999f;
+                                hit.m_damage.m_slash = 999f;
                                 hit.m_point = col.bounds.center;
+                                hit.m_dir = direction;
                                 hit.m_toolTier = 10;
                                 hit.SetAttacker(player);
 
@@ -739,14 +741,18 @@ namespace RunescapeMagicValheim
                             continue;
                         }
 
-                        // Б) Проверка на Destructible (кустарники, вереск, малые пихты, поваленные замшелые стволы)
+                        // Б) Проверка на Destructible (кустарники, бук малый Beech_small, вереск, малые пихты)
                         Destructible dest = col.GetComponentInParent<Destructible>();
                         if (dest != null && !hitDestructibles.Contains(dest))
                         {
+                            // Исключаем постройки и существ
+                            if (col.GetComponentInParent<WearNTear>() != null || col.GetComponentInParent<Character>() != null)
+                                continue;
+
                             string dName = dest.gameObject.name.ToLowerInvariant();
 
-                            // Исключаем пеньки деревьев
-                            if (dName.Contains("stub") || dName.Contains("stump"))
+                            // Исключаем бревна и пеньки деревьев
+                            if (col.GetComponentInParent<TreeLog>() != null || dName.Contains("stub") || dName.Contains("stump") || dName.Contains("stubbe"))
                                 continue;
 
                             // Исключаем любые камни, скалы, руды, валуны, кремний и металл
@@ -756,8 +762,8 @@ namespace RunescapeMagicValheim
                                 dName.Contains("silver") || dName.Contains("iron") || dName.Contains("metal"))
                                 continue;
 
-                            // В Valheim камни и минералы имеют иммунитет к рубящему урону (chop)
-                            if (dest.m_damages.m_chop == HitData.DamageModifier.Immune || dest.m_damages.m_chop == HitData.DamageModifier.Ignore)
+                            // В Valheim камни и минералы имеют иммунитет к рубящему урону (chop) и режущему (slash)
+                            if (dest.m_damages.m_chop == HitData.DamageModifier.Immune && dest.m_damages.m_slash == HitData.DamageModifier.Immune)
                                 continue;
 
                             hitDestructibles.Add(dest);
@@ -766,12 +772,13 @@ namespace RunescapeMagicValheim
                                 resourcesConsumed = true;
                                 RunescapeMagicPlugin.TryConsumeResources(player, staminaCost, 0f);
                             }
-                            if (dest.m_nview != null && dest.m_nview.IsValid()) dest.m_nview.ClaimOwnership();
 
-                            // Наносим исключительно рубящий урон (m_chop) без m_damage, чтобы не повреждать минеральные объекты
+                            // Наносим рубящий и режущий урон (без ClaimOwnership, чтобы не нарушать доставку RPC_Damage в Valheim)
                             HitData hit = new HitData();
                             hit.m_damage.m_chop = 999f;
+                            hit.m_damage.m_slash = 999f;
                             hit.m_point = col.bounds.center;
+                            hit.m_dir = direction;
                             hit.m_toolTier = 10;
                             hit.SetAttacker(player);
                             dest.Damage(hit);
@@ -1859,6 +1866,145 @@ namespace RunescapeMagicValheim
             });
         }
 
+        private static MonoBehaviour FindGerminationComponent(GameObject go)
+        {
+            if (go == null) return null;
+            MonoBehaviour[] mbs = go.GetComponentsInParent<MonoBehaviour>();
+            foreach (var mb in mbs)
+            {
+                if (mb != null && mb.GetType().Name == "Germination")
+                    return mb;
+            }
+            mbs = go.GetComponentsInChildren<MonoBehaviour>();
+            foreach (var mb in mbs)
+            {
+                if (mb != null && mb.GetType().Name == "Germination")
+                    return mb;
+            }
+            if (go.transform.root != null && go.transform.root.gameObject != go)
+            {
+                mbs = go.transform.root.GetComponentsInChildren<MonoBehaviour>();
+                foreach (var mb in mbs)
+                {
+                    if (mb != null && mb.GetType().Name == "Germination")
+                        return mb;
+                }
+            }
+            return null;
+        }
+
+        private static bool GetSeedBedCropInfo(MonoBehaviour germination, out string seedPrefab, out string cropPrefab, out string cropSharedName)
+        {
+            seedPrefab = null;
+            cropPrefab = null;
+            cropSharedName = null;
+
+            if (germination == null) return false;
+
+            try
+            {
+                MethodInfo getContentMethod = germination.GetType().GetMethod("GetContent", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (getContentMethod != null)
+                {
+                    object res = getContentMethod.Invoke(germination, null);
+                    if (res != null) seedPrefab = res.ToString();
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrEmpty(seedPrefab))
+            {
+                ZNetView nv = germination.GetComponent<ZNetView>();
+                if (nv != null && nv.IsValid())
+                {
+                    seedPrefab = nv.GetZDO().GetString("Content", "");
+                }
+            }
+
+            if (string.IsNullOrEmpty(seedPrefab)) return false;
+
+            try
+            {
+                FieldInfo convField = germination.GetType().GetField("m_conversion", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (convField != null)
+                {
+                    System.Collections.IEnumerable list = convField.GetValue(germination) as System.Collections.IEnumerable;
+                    if (list != null)
+                    {
+                        foreach (object item in list)
+                        {
+                            if (item == null) continue;
+                            FieldInfo fromField = item.GetType().GetField("m_from", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            FieldInfo toField = item.GetType().GetField("m_to", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                            if (fromField != null && toField != null)
+                            {
+                                ItemDrop fromDrop = fromField.GetValue(item) as ItemDrop;
+                                ItemDrop toDrop = toField.GetValue(item) as ItemDrop;
+                                if (fromDrop != null && toDrop != null)
+                                {
+                                    string fromName = Utils.GetPrefabName(fromDrop.gameObject);
+                                    if (string.Equals(fromName, seedPrefab, StringComparison.OrdinalIgnoreCase) ||
+                                        (fromDrop.m_itemData != null && fromDrop.m_itemData.m_shared != null && string.Equals(fromDrop.m_itemData.m_shared.m_name, seedPrefab, StringComparison.OrdinalIgnoreCase)))
+                                    {
+                                        cropPrefab = Utils.GetPrefabName(toDrop.gameObject);
+                                        if (toDrop.m_itemData != null && toDrop.m_itemData.m_shared != null)
+                                        {
+                                            cropSharedName = toDrop.m_itemData.m_shared.m_name;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Если не нашли в m_conversion, вычисляем эвристику (CarrotSeeds -> Carrot)
+            if (string.IsNullOrEmpty(cropPrefab))
+            {
+                string candidate = seedPrefab;
+                if (candidate.EndsWith("Seeds", StringComparison.OrdinalIgnoreCase))
+                    candidate = candidate.Substring(0, candidate.Length - 5);
+                else if (candidate.EndsWith("Seed", StringComparison.OrdinalIgnoreCase))
+                    candidate = candidate.Substring(0, candidate.Length - 4);
+
+                if (ObjectDB.instance != null)
+                {
+                    GameObject go = ObjectDB.instance.GetItemPrefab(candidate);
+                    if (go != null)
+                    {
+                        cropPrefab = candidate;
+                        ItemDrop id = go.GetComponent<ItemDrop>();
+                        if (id != null && id.m_itemData?.m_shared != null)
+                        {
+                            cropSharedName = id.m_itemData.m_shared.m_name;
+                        }
+                    }
+                }
+                if (string.IsNullOrEmpty(cropPrefab))
+                {
+                    cropPrefab = candidate;
+                }
+            }
+
+            if (string.IsNullOrEmpty(cropSharedName) && ObjectDB.instance != null && !string.IsNullOrEmpty(seedPrefab))
+            {
+                GameObject seedGo = ObjectDB.instance.GetItemPrefab(seedPrefab);
+                if (seedGo != null)
+                {
+                    ItemDrop id = seedGo.GetComponent<ItemDrop>();
+                    if (id != null && id.m_itemData?.m_shared != null)
+                    {
+                        cropSharedName = id.m_itemData.m_shared.m_name;
+                    }
+                }
+            }
+
+            return true;
+        }
+
         private static void AreaHarvestAtPoint(Player player, Vector3 center, float radius, bool autoPickup, float staminaCost, int mode = 0, Collider hitCol = null)
         {
             // Режим 1: Режим подбора (только лежащие на земле предметы, разблокируется на 50 ур.)
@@ -1898,14 +2044,16 @@ namespace RunescapeMagicValheim
             string filterPrefab = null;
             string filterDropPrefab = null;
             string filterItemSharedName = null;
+            string filterSeedPrefab = null;
 
             if (mode == 2)
             {
                 ItemDrop targetDrop = hitCol != null ? hitCol.GetComponentInParent<ItemDrop>() : null;
                 Pickable targetPickable = hitCol != null ? hitCol.GetComponentInParent<Pickable>() : null;
                 PickableItem targetPickItem = hitCol != null ? hitCol.GetComponentInParent<PickableItem>() : null;
+                MonoBehaviour targetGermination = hitCol != null ? FindGerminationComponent(hitCol.gameObject) : null;
 
-                if (targetDrop == null && targetPickable == null && targetPickItem == null && player != null)
+                if (targetDrop == null && targetPickable == null && targetPickItem == null && targetGermination == null && player != null)
                 {
                     GameObject hover = player.GetHoverObject();
                     if (hover != null)
@@ -1913,10 +2061,11 @@ namespace RunescapeMagicValheim
                         targetDrop = hover.GetComponentInParent<ItemDrop>();
                         targetPickable = hover.GetComponentInParent<Pickable>();
                         targetPickItem = hover.GetComponentInParent<PickableItem>();
+                        targetGermination = FindGerminationComponent(hover);
                     }
                 }
 
-                if (targetDrop == null && targetPickable == null && targetPickItem == null)
+                if (targetDrop == null && targetPickable == null && targetPickItem == null && targetGermination == null)
                 {
                     Collider[] near = Physics.OverlapSphere(center, 1.2f);
                     foreach (var c in near)
@@ -1928,6 +2077,8 @@ namespace RunescapeMagicValheim
                         if (targetPickable != null) break;
                         targetPickItem = c.GetComponentInParent<PickableItem>();
                         if (targetPickItem != null) break;
+                        targetGermination = FindGerminationComponent(c.gameObject);
+                        if (targetGermination != null) break;
                     }
                 }
 
@@ -1976,6 +2127,15 @@ namespace RunescapeMagicValheim
                     if (targetPickable.m_itemPrefab != null)
                     {
                         filterDropPrefab = Utils.GetPrefabName(targetPickable.m_itemPrefab);
+                        ItemDrop id = targetPickable.m_itemPrefab.GetComponent<ItemDrop>();
+                        if (id != null && id.m_itemData?.m_shared != null)
+                        {
+                            filterItemSharedName = id.m_itemData.m_shared.m_name;
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(filterDropPrefab))
+                    {
+                        filterSeedPrefab = filterDropPrefab + "Seeds";
                     }
                 }
                 else if (targetPickItem != null)
@@ -1984,11 +2144,30 @@ namespace RunescapeMagicValheim
                     if (targetPickItem.m_itemPrefab != null)
                     {
                         filterDropPrefab = Utils.GetPrefabName(targetPickItem.m_itemPrefab.gameObject);
+                        ItemDrop id = targetPickItem.m_itemPrefab.GetComponent<ItemDrop>();
+                        if (id != null && id.m_itemData?.m_shared != null)
+                        {
+                            filterItemSharedName = id.m_itemData.m_shared.m_name;
+                        }
+                    }
+                }
+                // В) Если прицелились в модовую рассадницу (blacks7ar-SeedBed: Germination):
+                else if (targetGermination != null)
+                {
+                    if (GetSeedBedCropInfo(targetGermination, out string gSeed, out string gCrop, out string gName))
+                    {
+                        filterSeedPrefab = gSeed;
+                        filterDropPrefab = gCrop;
+                        filterItemSharedName = gName;
+                        if (!string.IsNullOrEmpty(gCrop))
+                        {
+                            filterPrefab = "Pickable_" + gCrop;
+                        }
                     }
                 }
                 else
                 {
-                    player.Message(MessageHud.MessageType.Center, "Прицельтесь в конкретное растение или предмет на земле для точечного сбора!");
+                    player.Message(MessageHud.MessageType.Center, "Прицельтесь в конкретное растение, грядку или предмет на земле для точечного сбора!");
                     return;
                 }
             }
@@ -2007,8 +2186,30 @@ namespace RunescapeMagicValheim
                 Pickable pickable = col.GetComponentInParent<Pickable>();
                 if (pickable != null && col.GetComponentInParent<Fish>() == null && !picked.Contains(pickable) && pickable.CanBePicked())
                 {
-                    if (filterPrefab != null && Utils.GetPrefabName(pickable.gameObject) != filterPrefab)
-                        continue;
+                    if (mode == 2)
+                    {
+                        string pName = Utils.GetPrefabName(pickable.gameObject);
+                        string dropName = pickable.m_itemPrefab != null ? Utils.GetPrefabName(pickable.m_itemPrefab) : null;
+                        string itemShared = pickable.m_itemPrefab != null ? pickable.m_itemPrefab.GetComponent<ItemDrop>()?.m_itemData?.m_shared?.m_name : null;
+
+                        bool match = false;
+                        if (!string.IsNullOrEmpty(filterPrefab) && (string.Equals(pName, filterPrefab, StringComparison.OrdinalIgnoreCase) || string.Equals(pName, "Pickable_" + filterPrefab, StringComparison.OrdinalIgnoreCase)))
+                            match = true;
+                        if (!match && !string.IsNullOrEmpty(filterDropPrefab))
+                        {
+                            if (string.Equals(pName, "Pickable_" + filterDropPrefab, StringComparison.OrdinalIgnoreCase) ||
+                                (!string.IsNullOrEmpty(dropName) && string.Equals(dropName, filterDropPrefab, StringComparison.OrdinalIgnoreCase)))
+                            {
+                                match = true;
+                            }
+                        }
+                        if (!match && !string.IsNullOrEmpty(filterItemSharedName) && !string.IsNullOrEmpty(itemShared) && string.Equals(itemShared, filterItemSharedName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            match = true;
+                        }
+
+                        if (!match) continue;
+                    }
 
                     picked.Add(pickable);
                     pickable.Interact(player, false, false);
@@ -2019,8 +2220,22 @@ namespace RunescapeMagicValheim
                 PickableItem pickableItem = col.GetComponentInParent<PickableItem>();
                 if (pickableItem != null && col.GetComponentInParent<Fish>() == null && !pickedItems.Contains(pickableItem))
                 {
-                    if (filterPrefab != null && Utils.GetPrefabName(pickableItem.gameObject) != filterPrefab)
-                        continue;
+                    if (mode == 2)
+                    {
+                        string pName = Utils.GetPrefabName(pickableItem.gameObject);
+                        string dropName = pickableItem.m_itemPrefab != null ? Utils.GetPrefabName(pickableItem.m_itemPrefab.gameObject) : null;
+                        string itemShared = pickableItem.m_itemPrefab != null ? pickableItem.m_itemPrefab.m_itemData?.m_shared?.m_name : null;
+
+                        bool match = false;
+                        if (!string.IsNullOrEmpty(filterPrefab) && string.Equals(pName, filterPrefab, StringComparison.OrdinalIgnoreCase))
+                            match = true;
+                        if (!match && !string.IsNullOrEmpty(filterDropPrefab) && !string.IsNullOrEmpty(dropName) && string.Equals(dropName, filterDropPrefab, StringComparison.OrdinalIgnoreCase))
+                            match = true;
+                        if (!match && !string.IsNullOrEmpty(filterItemSharedName) && !string.IsNullOrEmpty(itemShared) && string.Equals(itemShared, filterItemSharedName, StringComparison.OrdinalIgnoreCase))
+                            match = true;
+
+                        if (!match) continue;
+                    }
 
                     pickedItems.Add(pickableItem);
                     pickableItem.Interact(player, false, false);
@@ -2037,6 +2252,28 @@ namespace RunescapeMagicValheim
                         if (mb != null && mb.GetType().Name == "Germination")
                         {
                             processedBeds.Add(root);
+
+                            if (mode == 2)
+                            {
+                                GetSeedBedCropInfo(mb, out string bedSeed, out string bedCrop, out string bedCropName);
+                                bool match = false;
+                                if (!string.IsNullOrEmpty(filterSeedPrefab) && !string.IsNullOrEmpty(bedSeed) && string.Equals(bedSeed, filterSeedPrefab, StringComparison.OrdinalIgnoreCase))
+                                    match = true;
+                                if (!match && !string.IsNullOrEmpty(filterDropPrefab) && !string.IsNullOrEmpty(bedCrop) && string.Equals(bedCrop, filterDropPrefab, StringComparison.OrdinalIgnoreCase))
+                                    match = true;
+                                if (!match && !string.IsNullOrEmpty(filterItemSharedName) && !string.IsNullOrEmpty(bedCropName) && string.Equals(bedCropName, filterItemSharedName, StringComparison.OrdinalIgnoreCase))
+                                    match = true;
+                                if (!match && !string.IsNullOrEmpty(filterDropPrefab) && !string.IsNullOrEmpty(bedSeed) && bedSeed.IndexOf(filterDropPrefab, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    match = true;
+                                if (!match && !string.IsNullOrEmpty(filterSeedPrefab) && !string.IsNullOrEmpty(bedCrop) && filterSeedPrefab.IndexOf(bedCrop, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    match = true;
+
+                                if (!match)
+                                {
+                                    continue;
+                                }
+                            }
+
                             MethodInfo getStatus = mb.GetType().GetMethod("GetStatus", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                             if (getStatus != null)
                             {
@@ -2082,7 +2319,16 @@ namespace RunescapeMagicValheim
 
                 if (collectedCount > 0)
                 {
-                    player.Message(MessageHud.MessageType.Center, $"Собрано растений/ресурсов: {collectedCount}");
+                    string cropTitle = "";
+                    if (mode == 2)
+                    {
+                        string dispName = filterItemSharedName != null && Localization.instance != null
+                            ? Localization.instance.Localize(filterItemSharedName)
+                            : (!string.IsNullOrEmpty(filterDropPrefab) ? filterDropPrefab : filterPrefab);
+                        if (!string.IsNullOrEmpty(dispName))
+                            cropTitle = $" ({dispName})";
+                    }
+                    player.Message(MessageHud.MessageType.Center, $"Собрано растений/ресурсов{cropTitle}: {collectedCount}");
                 }
                 else
                 {
