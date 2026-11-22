@@ -291,6 +291,11 @@ Each spell features specialized operational modes designed for precise Viking ut
 
 ## Version History / История изменений
 
+### v1.1.3
+- **Multiplayer Fix / Исправление мультиплеера:**
+  - **EN:** Fixed `ArgumentException: An item with the same key has already been added` crash when joining a multiplayer server. The RPC handler `RPC_RunescapeRepairInventory` was being registered multiple times via `ZRoutedRpc.Register` during repeated `Player.Awake` calls (e.g., when connecting to a friend's server). Added duplicate registration guard with automatic reset on world change/disconnect.
+  - **RU:** Исправлен краш `ArgumentException: An item with the same key has already been added` при входе на мультиплеерный сервер. Обработчик RPC `RPC_RunescapeRepairInventory` регистрировался повторно через `ZRoutedRpc.Register` при каждом вызове `Player.Awake` (например, при подключении к серверу друга). Добавлена защита от дублирования с автоматическим сбросом при смене мира / дисконнекте.
+
 ### v1.1.2
 - **Area Harvest (Targeted Crop Mode / Точечный сбор):**
   - **EN:** Fixed an issue where modded SeedBeds (`blacks7ar-SeedBed`) were harvested regardless of planted crop type in Mode 2 (Selective/Targeted Harvest). SeedBeds now inspect their planted seed/crop and only harvest if they match the targeted crop. Aiming directly at SeedBeds in Mode 2 is also fully supported. (Fixes #3)

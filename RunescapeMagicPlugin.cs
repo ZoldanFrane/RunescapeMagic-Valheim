@@ -27,7 +27,7 @@ namespace RunescapeMagicValheim
     {
         public const string PluginGUID = "com.custom.runescapemagicvalheim";
         public const string PluginName = "Runescape Magic in Valheim";
-        public const string PluginVersion = "1.1.2";
+        public const string PluginVersion = "1.1.3";
 
         internal static ManualLogSource Log;
         internal static RunescapeMagicPlugin Instance;
@@ -297,6 +297,18 @@ namespace RunescapeMagicValheim
         }
     }
 
+    [HarmonyPatch(typeof(Game), nameof(Game.OnDestroy))]
+    public static class GameDestroyPatch
+    {
+        [HarmonyPostfix]
+        public static void Postfix()
+        {
+            // При выходе из мира / дисконнекте ZRoutedRpc.instance пересоздаётся,
+            // поэтому сбрасываем флаг, чтобы RPC зарегистрировался заново при следующем входе.
+            PlayerRpcPatches.ResetRegistration();
+        }
+    }
+
     [HarmonyPatch(typeof(GameCamera), nameof(GameCamera.UpdateCamera))]
     public static class GameCameraScrollPatch
     {
@@ -324,11 +336,22 @@ namespace RunescapeMagicValheim
     [HarmonyPatch(typeof(Player), nameof(Player.Awake))]
     public static class PlayerRpcPatches
     {
+        private static bool s_rpcRegistered = false;
+
         [HarmonyPostfix]
         public static void OnPlayerAwake(Player __instance)
         {
-            if (ZRoutedRpc.instance != null)
+            if (ZRoutedRpc.instance != null && !s_rpcRegistered)
             {
+                // Дополнительная проверка через словарь m_functions на случай,
+                // если RPC уже был зарегистрирован другим путём
+                int hash = "RPC_RunescapeRepairInventory".GetStableHashCode();
+                if (ZRoutedRpc.instance.m_functions.ContainsKey(hash))
+                {
+                    s_rpcRegistered = true;
+                    return;
+                }
+
                 ZRoutedRpc.instance.Register<string, float>("RPC_RunescapeRepairInventory", (sender, casterName, repairRatio) =>
                 {
                     if (Player.m_localPlayer == null) return;
@@ -348,7 +371,17 @@ namespace RunescapeMagicValheim
                         Player.m_localPlayer.Message(MessageHud.MessageType.Center, $"{casterName} восстановил прочность вашего снаряжения!");
                     }
                 });
+                s_rpcRegistered = true;
             }
+        }
+
+        /// <summary>
+        /// Сбрасывает флаг регистрации при смене мира / дисконнекте,
+        /// так как ZRoutedRpc.instance пересоздаётся при каждом подключении.
+        /// </summary>
+        public static void ResetRegistration()
+        {
+            s_rpcRegistered = false;
         }
     }
 
