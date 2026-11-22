@@ -341,37 +341,44 @@ namespace RunescapeMagicValheim
         [HarmonyPostfix]
         public static void OnPlayerAwake(Player __instance)
         {
-            if (ZRoutedRpc.instance != null && !s_rpcRegistered)
+            try
             {
-                // Дополнительная проверка через словарь m_functions на случай,
-                // если RPC уже был зарегистрирован другим путём
-                int hash = "RPC_RunescapeRepairInventory".GetStableHashCode();
-                if (ZRoutedRpc.instance.m_functions.ContainsKey(hash))
+                if (ZRoutedRpc.instance != null && !s_rpcRegistered)
                 {
-                    s_rpcRegistered = true;
-                    return;
-                }
+                    // Дополнительная проверка через словарь m_functions на случай,
+                    // если RPC уже был зарегистрирован другим путём
+                    int hash = "RPC_RunescapeRepairInventory".GetStableHashCode();
+                    if (ZRoutedRpc.instance.m_functions != null && ZRoutedRpc.instance.m_functions.ContainsKey(hash))
+                    {
+                        s_rpcRegistered = true;
+                        return;
+                    }
 
-                ZRoutedRpc.instance.Register<string, float>("RPC_RunescapeRepairInventory", (sender, casterName, repairRatio) =>
-                {
-                    if (Player.m_localPlayer == null) return;
-                    int repaired = 0;
-                    foreach (var item in Player.m_localPlayer.GetInventory().GetAllItems())
+                    ZRoutedRpc.instance.Register<string, float>("RPC_RunescapeRepairInventory", (sender, casterName, repairRatio) =>
                     {
-                        if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
+                        if (Player.m_localPlayer == null) return;
+                        int repaired = 0;
+                        foreach (var item in Player.m_localPlayer.GetInventory().GetAllItems())
                         {
-                            float maxDur = item.GetMaxDurability();
-                            item.m_durability = Mathf.Min(maxDur, item.m_durability + maxDur * repairRatio);
-                            repaired++;
+                            if (item.m_shared.m_useDurability && item.m_durability < item.GetMaxDurability())
+                            {
+                                float maxDur = item.GetMaxDurability();
+                                item.m_durability = Mathf.Min(maxDur, item.m_durability + maxDur * repairRatio);
+                                repaired++;
+                            }
                         }
-                    }
-                    if (repaired > 0)
-                    {
-                        SpellMechanics.PlayRepairSound(Player.m_localPlayer.transform.position);
-                        Player.m_localPlayer.Message(MessageHud.MessageType.Center, $"{casterName} восстановил прочность вашего снаряжения!");
-                    }
-                });
-                s_rpcRegistered = true;
+                        if (repaired > 0)
+                        {
+                            SpellMechanics.PlayRepairSound(Player.m_localPlayer.transform.position);
+                            Player.m_localPlayer.Message(MessageHud.MessageType.Center, $"{casterName} восстановил прочность вашего снаряжения!");
+                        }
+                    });
+                    s_rpcRegistered = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                RunescapeMagicPlugin.Log?.LogWarning($"[RunescapeMagic] Failed to register RPC_RunescapeRepairInventory: {ex.Message}");
             }
         }
 
